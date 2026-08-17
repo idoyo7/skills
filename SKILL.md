@@ -70,9 +70,12 @@ humanize-docs v1.2 — 대상 {N}개 파일 / run_id: {YYYY-MM-DD-NNN}
 HD="{이 스킬의 base directory}"
 [ -f "$HD/scripts/md_shield.py" ] || { echo "ERROR: HD 경로가 스킬 디렉토리가 아니다: $HD"; exit 1; }
 HK=$(ls -d "$HOME"/.claude/plugins/cache/im-not-ai/humanize-korean/*/ 2>/dev/null | sort -V | tail -1)
-[ -z "$HK" ] && [ -d "$HOME/.claude/skills/humanize-korean" ] && HK="$HOME/.claude/skills/humanize-korean/.."
+[ -z "$HK" ] && [ -d "$HOME/.claude/skills/humanize-korean" ] && HK=$(cd -P "$HOME/.claude/skills/humanize-korean/../../.." 2>/dev/null && pwd)
 [ -z "$HK" ] && [ -d "$HOME/.claude/plugins/marketplaces/im-not-ai/.claude/skills/humanize-korean" ] && HK="$HOME/.claude/plugins/marketplaces/im-not-ai"
 [ -z "$HK" ] && { echo "ERROR: humanize-korean 미설치 — /plugin install humanize-korean@im-not-ai"; exit 1; }
+# HK 가 비어 있지 않아도 엉뚱한 곳을 가리킬 수 있다 — 실제 스크립트 존재로 검증한다.
+# 이 가드가 없으면 잘못된 HK 로 Phase 4 까지 진행한 뒤 거기서 죽는다.
+[ -f "$HK/scripts/prepare_monolith_input.py" ] || { echo "ERROR: HK 에 humanize-korean 스크립트가 없다: $HK"; exit 1; }
 QUICK_RULES="$HK/.claude/skills/humanize-korean/references/quick-rules.md"
 echo "HD=$HD"; echo "HK=$HK"; ls "$QUICK_RULES" "$HK/scripts/prepare_monolith_input.py" "$HK/scripts/verify_gates.py"
 ```
@@ -189,7 +192,7 @@ python3 "$HD/scripts/llm_signature.py" score \
 D="$PWD/_workspace/docs-{run_id}/{slug}"
 HD="{이 스킬의 base directory}"
 HK=$(ls -d "$HOME"/.claude/plugins/cache/im-not-ai/humanize-korean/*/ 2>/dev/null | sort -V | tail -1)
-[ -z "$HK" ] && [ -d "$HOME/.claude/skills/humanize-korean" ] && HK="$HOME/.claude/skills/humanize-korean/.."
+[ -z "$HK" ] && [ -d "$HOME/.claude/skills/humanize-korean" ] && HK=$(cd -P "$HOME/.claude/skills/humanize-korean/../../.." 2>/dev/null && pwd)
 [ -z "$HK" ] && [ -d "$HOME/.claude/plugins/marketplaces/im-not-ai/.claude/skills/humanize-korean" ] && HK="$HOME/.claude/plugins/marketplaces/im-not-ai"
 . "$PWD/_workspace/docs-{run_id}/options.env" || { echo "ERROR: options.env 없음 — Phase 1의 옵션 해석 블록을 먼저 실행하라"; exit 1; }
 
@@ -342,7 +345,7 @@ Phase 6과 Phase 7은 서로 다른 Bash 호출(새 셸)이라 위 `$REWRITE_EXI
 D="$PWD/_workspace/docs-{run_id}/{slug}"
 HD="{이 스킬의 base directory}"
 HK=$(ls -d "$HOME"/.claude/plugins/cache/im-not-ai/humanize-korean/*/ 2>/dev/null | sort -V | tail -1)
-[ -z "$HK" ] && [ -d "$HOME/.claude/skills/humanize-korean" ] && HK="$HOME/.claude/skills/humanize-korean/.."
+[ -z "$HK" ] && [ -d "$HOME/.claude/skills/humanize-korean" ] && HK=$(cd -P "$HOME/.claude/skills/humanize-korean/../../.." 2>/dev/null && pwd)
 [ -z "$HK" ] && [ -d "$HOME/.claude/plugins/marketplaces/im-not-ai/.claude/skills/humanize-korean" ] && HK="$HOME/.claude/plugins/marketplaces/im-not-ai"
 . "$PWD/_workspace/docs-{run_id}/options.env" || { echo "ERROR: options.env 없음 — Phase 1의 옵션 해석 블록을 먼저 실행하라"; exit 1; }
 echo "OPTIONS: HEADING_EDIT=$HEADING_EDIT CONDENSE=$CONDENSE STRICT=$STRICT"   # 재개 시에도 이번 라운드에 실제로 적용 중인 옵션 값을 매번 눈에 보이게 남긴다(Phase 0 참고)
