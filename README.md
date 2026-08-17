@@ -16,6 +16,7 @@ git clone git@github.com:idoyo7/skills.git ~/src/skills
 | 디렉토리 | 호출 이름 | 설명 |
 |---|---|---|
 | `wwe/` | `/wwe` | 마크다운 문서의 AI 티 제거 (문장 축 + 레이아웃 지문 축). humanize-korean 플러그인 필요 |
+| `freeze/` | `/freeze` | 얼음! — 5시간 한도에 걸리면 handoff 를 남기고, 땡(리셋 시각)에 같은 세션을 헤드리스로 자동 재개하는 세션 예약 |
 
 ## 스킬 추가하기
 
