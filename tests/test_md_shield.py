@@ -694,6 +694,56 @@ class T8_ConflictRejection(ShieldTestCase):
 
 
 # ---------------------------------------------------------------------------
+# T10 — 무편집 검증: 코퍼스 전체가 mask -> restore(무수정) -> verify 를 통과해야 한다
+# ---------------------------------------------------------------------------
+
+class T10_UnmodifiedVerifyPassesAllCorpus(ShieldTestCase):
+    """mask -> 산문 무수정 restore -> verify 가 코퍼스 전체에서 PASS(exit 0) 여야 한다.
+
+    T1 은 IDENTITY(바이트 동일)만 확인하고 verify CLI 는 호출하지 않는다. 다른
+    verify 테스트(T5~T7)들은 특정 파일 하나를 골라 일부러 편집한 뒤 verify 를
+    호출한다. 그래서 "아무것도 편집하지 않은 복원본인데도 verify 가 자체적으로
+    FAIL 을 내는" 오탐(예: 같은 텍스트를 가진 블록 세그먼트가 여러 번 등장하는
+    문서)을 코퍼스 전체 기준으로 잡아낼 테스트가 이전에는 없었다.
+    """
+
+    def test_verify_passes_on_unedited_restoration_all_corpus(self):
+        failures = []
+        for src in corpus_files():
+            with self.subTest(file=src.name):
+                wd = self.workdir / src.stem
+                wd.mkdir(parents=True, exist_ok=True)
+
+                mask_proc, prose, map_path = do_mask(src, wd)
+                if mask_proc.returncode != 0:
+                    failures.append(
+                        f"{src.name}: mask 가 실패했습니다 (기대: 0).\n{proc_debug(mask_proc, 'mask')}"
+                    )
+                    continue
+
+                restored = wd / "restored.md"
+                restore_proc = do_restore(prose, map_path, restored)
+                if restore_proc.returncode != 0:
+                    failures.append(
+                        f"{src.name}: restore 가 실패했습니다 (기대: 0).\n{proc_debug(restore_proc, 'restore')}"
+                    )
+                    continue
+
+                verify_proc = do_verify(src, restored, map_path)
+                if verify_proc.returncode != 0:
+                    failures.append(
+                        f"{src.name}: 무편집 복원본인데 verify 가 PASS(exit 0)가 아닙니다"
+                        f"(exit {verify_proc.returncode}).\n{proc_debug(verify_proc, 'verify')}"
+                    )
+
+        if failures:
+            self.fail(
+                f"\n\n무편집 verify 위반 {len(failures)}건 (전체 {len(corpus_files())}개 중):\n\n"
+                + "\n\n".join(failures)
+            )
+
+
+# ---------------------------------------------------------------------------
 # 진입점
 # ---------------------------------------------------------------------------
 
