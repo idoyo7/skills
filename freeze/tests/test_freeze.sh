@@ -88,6 +88,37 @@ for i in $(seq 1 20); do
 done
 grep -q -- "--permission-mode acceptEdits" "$CALLS" && ok "오버라이드 반영" || fail "오버라이드 미반영: $(grep resume "$CALLS")"
 
+echo "== arm: 선예약 + 체인 정보 =="
+: > "$CALLS"; echo "# h" > "$HANDOFF"
+touch "$HANDOFF.freeze-done"   # 이전 회차의 스테일 완료 마커
+OUT=$(bash "$FZ" arm --cwd "$FAKE_CWD" --handoff "$HANDOFF" --job armjob --chain-left 2)
+echo "$OUT" | grep -q "무장 완료" && ok "arm 등록" || fail "arm 출력: $OUT"
+[ -f "$HANDOFF.freeze-done" ] && fail "스테일 완료 마커 미제거" || ok "스테일 완료 마커 제거"
+RES="$FREEZE_STATE_DIR/armjob/reservation.json"
+CHAIN=$(node -e "const d=JSON.parse(require('fs').readFileSync('$RES'));console.log(d.chain, d.chain_left, d.mode)")
+[ "$CHAIN" = "1 2 arm" ] && ok "체인 정보 기록 ($CHAIN)" || fail "체인 정보: $CHAIN"
+# 땡 시각은 auto — HUD/역산 값이므로 미래여야 한다
+AT=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$RES')).resume_at)")
+[ "$AT" -gt "$(date +%s)" ] && ok "auto 땡 시각이 미래" || fail "땡 시각 과거: $AT"
+bash "$FZ" cancel armjob > /dev/null
+
+echo "== done: 완료 신호로 재개 없이 종료 =="
+: > "$CALLS"; echo "# h" > "$HANDOFF"
+bash "$FZ" arm --cwd "$FAKE_CWD" --handoff "$HANDOFF" --job donejob --chain-left 1 > /dev/null
+node -e "
+const fs=require('fs'), p='$FREEZE_STATE_DIR/donejob/reservation.json';
+const d=JSON.parse(fs.readFileSync(p)); d.resume_at=Math.floor(Date.now()/1000)+3;
+fs.writeFileSync(p, JSON.stringify(d,null,2));"   # 곧 깨어나도록 당긴다
+bash "$FZ" done --handoff "$HANDOFF" | grep -q "완료 신호" && ok "done 마커 기록" || fail "done 출력"
+for i in $(seq 1 15); do
+  ST=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$FREEZE_STATE_DIR/donejob/reservation.json')).status)")
+  [ "$ST" = "completed_early" ] && break
+  sleep 1
+done
+[ "$ST" = "completed_early" ] && ok "완료 신호로 조기 종료" || fail "상태=$ST"
+grep -q -- "--resume" "$CALLS" && fail "완료 신호에도 재개가 돌았다" || ok "재개 호출 없음"
+rm -f "$HANDOFF.freeze-done"
+
 echo "== cancel =="
 echo "# h" > "$HANDOFF"
 bash "$FZ" reserve --at +1h --cwd "$FAKE_CWD" --handoff "$HANDOFF" --job canceljob > /dev/null

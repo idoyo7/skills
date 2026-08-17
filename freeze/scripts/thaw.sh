@@ -30,12 +30,17 @@ HANDOFF=$(field handoff)
 PERM=$(field permission_mode)
 [ -n "$PERM" ] || PERM="bypassPermissions"   # 구버전 reservation 호환
 
+# 완료 신호 — arm 으로 미리 걸어둔 예약은, 작업이 먼저 끝나면 헛돌지 않고 조용히 종료해야 한다.
+# 메인 세션이 `freeze.sh done --handoff <경로>` 로 남긴 마커를 본다.
+DONE_MARK="${HANDOFF}.freeze-done"
+
 echo "[$(date '+%F %T')] thaw 시작 — job=$JOB 땡=$(date -d "@$RESUME_AT" '+%F %T')"
 
-# 1) 예약 시각까지 대기 (60초 단위로 끊어 자며 취소 여부 확인)
+# 1) 예약 시각까지 대기 (60초 단위로 끊어 자며 취소·완료 여부 확인)
 # sleep 은 백그라운드 + wait 로 돌린다 — 포그라운드 sleep 은 bash 의 TERM 처리를 막아 kill 이 최대 60초 늦어진다.
 while :; do
   [ "$(field status)" = "cancelled" ] && { echo "취소됨 — 종료"; exit 0; }
+  [ -f "$DONE_MARK" ] && { set_status "completed_early"; echo "완료 신호 감지 — 재개 없이 종료"; exit 0; }
   now=$(date +%s)
   remain=$(( RESUME_AT - now ))
   [ "$remain" -le 0 ] && break
@@ -46,6 +51,7 @@ done
 probe_ok=0
 for i in $(seq 1 "$PROBE_MAX"); do
   [ "$(field status)" = "cancelled" ] && { echo "취소됨 — 종료"; exit 0; }
+  [ -f "$DONE_MARK" ] && { set_status "completed_early"; echo "완료 신호 감지 — 재개 없이 종료"; exit 0; }
   if "$CLAUDE_BIN" -p --model haiku "ok" > "$DIR/probe.log" 2>&1; then
     probe_ok=1
     echo "[$(date '+%F %T')] 프로브 통과 (시도 $i)"
@@ -61,11 +67,26 @@ if [ "$probe_ok" != 1 ]; then
 fi
 
 # 3) 땡 — 세션 재개
+# 재무장 체인(arm 모드): 이 창 안에 못 끝내면 재개 세션이 스스로 다음 창을 arm 한다.
+CHAIN=$(field chain)
+CHAIN_LEFT=$(field chain_left)
+[ -n "$CHAIN_LEFT" ] || CHAIN_LEFT=0
+
+CHAIN_NOTE=""
+if [ "$CHAIN" = "1" ] && [ "$CHAIN_LEFT" -gt 0 ]; then
+  CHAIN_NOTE="
+
+이번 창에도 다 못 끝낼 것 같으면, 작업을 멈추기 전에 다음 창을 미리 걸어라(남은 체인 ${CHAIN_LEFT}회):
+  bash ~/.claude/skills/freeze/scripts/freeze.sh arm --cwd \"$CWD\" --handoff \"$HANDOFF\" --chain-left $((CHAIN_LEFT - 1))
+반대로 작업을 다 끝냈으면 완료 신호를 남겨라 — 걸려 있는 예약이 헛돌지 않는다:
+  bash ~/.claude/skills/freeze/scripts/freeze.sh done --handoff \"$HANDOFF\""
+fi
+
 set_status "running"
-echo "[$(date '+%F %T')] 재개: session=$SESSION cwd=$CWD"
+echo "[$(date '+%F %T')] 재개: session=$SESSION cwd=$CWD chain_left=$CHAIN_LEFT"
 cd "$CWD" || { set_status "failed"; exit 1; }
 "$CLAUDE_BIN" -p --resume "$SESSION" --permission-mode "$PERM" \
-  "땡 — freeze 스킬로 예약된 재개다. $HANDOFF 를 읽고 중단된 작업을 이어서 완료해줘. 끝나면 같은 파일 하단에 '## 재개 결과' 섹션으로 한 일과 검증 결과를 기록해줘." \
+  "땡 — freeze 스킬로 예약된 재개다. $HANDOFF 를 읽고 중단된 작업을 이어서 완료해줘. 끝나면 같은 파일 하단에 '## 재개 결과' 섹션으로 한 일과 검증 결과를 기록해줘.${CHAIN_NOTE}" \
   > "$DIR/resume-output.txt" 2>&1
 rc=$?
 

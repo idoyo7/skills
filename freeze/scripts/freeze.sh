@@ -15,6 +15,12 @@ freeze.sh <command> [args]
   reserve --at <시각> --cwd <dir> --handoff <path> [--session <uuid>] [--job <name>]
                                     예약을 등록하고 슬리퍼를 기동한다.
                                     <시각>: auto | epoch | +30m | +2h | +90s | HH:MM | ISO8601
+                                    [--permission-mode <mode>] 기본 bypassPermissions
+  arm --cwd <dir> --handoff <path> [--chain-left <n>] [--job <name>]
+                                    선예약(얼음 대기). 작업 시작 시점에 걸어두고 남은 쿼터를 끝까지 태운다.
+                                    한도로 막히면 예약분이 알아서 잇고, 먼저 끝나면 `done` 으로 해제한다.
+                                    --chain-left 는 창을 넘겨가며 이어붙일 최대 횟수(기본 2).
+  done --handoff <path>             완료 신호. 걸어둔 예약이 재개 없이 조용히 종료한다.
   status                            예약 목록과 상태.
   cancel <job>                      예약 취소 (슬리퍼 종료).
   check                             시각이 지났는데 슬리퍼가 죽어 있는 예약을 지금 실행 (캐치업).
@@ -231,9 +237,54 @@ cmd_check() {
   done
 }
 
+# arm — 작업 시작 시점에 미리 거는 예약.
+# reserve 와 다른 점은 셋: 땡 시각을 항상 auto 로 잡고, 체인 횟수를 심고,
+# 이전 완료 마커를 지워 스테일 신호로 즉시 종료하는 사고를 막는다.
+cmd_arm() {
+  local cwd="" handoff="" job="" chain_left="2" perm="bypassPermissions"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --cwd) cwd="$2"; shift 2;;
+      --handoff) handoff="$2"; shift 2;;
+      --job) job="$2"; shift 2;;
+      --chain-left) chain_left="$2"; shift 2;;
+      --permission-mode) perm="$2"; shift 2;;
+      *) echo "ERROR: unknown arg $1" >&2; return 1;;
+    esac
+  done
+  [ -n "$cwd" ] && [ -n "$handoff" ] || { usage; return 1; }
+  rm -f "${handoff}.freeze-done"   # 이전 회차의 완료 마커 제거
+  cmd_reserve --at auto --cwd "$cwd" --handoff "$handoff" --permission-mode "$perm" \
+    ${job:+--job "$job"} || return 1
+  # 방금 만든 예약에 체인 정보를 심는다 (reserve 가 만든 최신 reservation.json)
+  local latest; latest=$(ls -t "$STATE_ROOT"/*/reservation.json 2>/dev/null | head -1)
+  [ -n "$latest" ] && node -e '
+const fs = require("fs"), [p, left] = process.argv.slice(1);
+const d = JSON.parse(fs.readFileSync(p));
+d.chain = 1; d.chain_left = parseInt(left); d.mode = "arm";
+fs.writeFileSync(p, JSON.stringify(d, null, 2));
+' "$latest" "$chain_left"
+  echo "무장 완료 — 남은 쿼터를 계속 쓰다가 막히면 예약분이 잇는다 (체인 ${chain_left}회). 먼저 끝나면: freeze.sh done --handoff $handoff"
+}
+
+cmd_done() {
+  local handoff=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --handoff) handoff="$2"; shift 2;;
+      *) echo "ERROR: unknown arg $1" >&2; return 1;;
+    esac
+  done
+  [ -n "$handoff" ] || { usage; return 1; }
+  date '+%F %T 완료' > "${handoff}.freeze-done"
+  echo "완료 신호 기록 — 걸린 예약은 재개 없이 종료한다: ${handoff}.freeze-done"
+}
+
 case "${1:-}" in
   estimate) cmd_estimate;;
   reserve) shift; cmd_reserve "$@";;
+  arm) shift; cmd_arm "$@";;
+  done) shift; cmd_done "$@";;
   status) cmd_status;;
   cancel) shift; cmd_cancel "$@";;
   check) cmd_check;;
