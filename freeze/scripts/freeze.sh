@@ -21,13 +21,35 @@ freeze.sh <command> [args]
 EOF
 }
 
-# 현재 5시간 사용량 윈도우의 끝(땡)을 transcript 타임스탬프로 역산한다.
-# ccusage 와 같은 모델: 블록 시작 = 첫 활동 시각을 정시로 내림, 블록 = 시작 + 5h,
-# 활동이 블록 끝을 넘으면 다음 블록이 바로 이어진다.
+# 현재 5시간 사용량 윈도우의 끝(땡)을 구한다.
+# 1순위: OMC HUD 가 캐시한 statusline stdin payload 의 rate_limits.five_hour.resets_at (정확값).
+# 폴백: transcript 타임스탬프 역산 — ccusage 와 같은 모델(블록 시작 = 첫 활동 정시 내림 + 5h,
+# 활동이 블록 끝을 넘으면 다음 블록이 바로 이어진다). 근사라 수 시간 어긋날 수 있다.
 cmd_estimate() {
-  node - "$PROJECTS_DIR" <<'JS'
+  local hud_cache="${FREEZE_HUD_CACHE:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hud/cache}"
+  node - "$PROJECTS_DIR" "$hud_cache" <<'JS'
 const fs = require('fs'), path = require('path');
 const root = process.argv[2];
+const hudCache = process.argv[3];
+const nowSec = Date.now() / 1000;
+
+// ---- 1순위: HUD 캐시의 resets_at (Claude Code 가 준 정확값) ----
+try {
+  const cands = fs.readdirSync(hudCache)
+    .filter(f => f.startsWith('stdin.') && f.endsWith('.json'))
+    .map(f => path.join(hudCache, f))
+    .map(p => ({ p, mtime: fs.statSync(p).mtimeMs / 1000 }))
+    .filter(c => c.mtime > nowSec - 6 * 3600)   // 6시간 넘게 묵은 payload 는 다른 윈도우일 수 있음
+    .sort((a, b) => b.mtime - a.mtime);
+  for (const c of cands) {
+    try {
+      const at = JSON.parse(fs.readFileSync(c.p, 'utf8'))?.rate_limits?.five_hour?.resets_at;
+      if (Number.isFinite(at) && at > nowSec) { console.log(String(Math.floor(at))); process.exit(0); }
+    } catch { /* skip */ }
+  }
+} catch { /* HUD 캐시 없음 → 폴백 */ }
+
+// ---- 폴백: transcript 역산 ----
 const now = Date.now() / 1000;
 const TS = /"timestamp"\s*:\s*"([^"]+)"/g;
 

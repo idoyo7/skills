@@ -13,6 +13,7 @@ fail() { FAIL=$((FAIL+1)); echo "  FAIL: $1"; }
 
 export FREEZE_STATE_DIR="$TMP/state"
 export CLAUDE_PROJECTS_DIR="$TMP/projects"
+export FREEZE_HUD_CACHE="$TMP/hud"   # 실환경 HUD 캐시 격리 (기본값은 ~/.claude/hud/cache)
 
 # ---- 픽스처: 가짜 프로젝트 transcript ----
 FAKE_CWD="$TMP/work"
@@ -38,6 +39,19 @@ GOT=$(bash "$FZ" estimate)
 echo "== estimate: 활동 없음 → UNKNOWN =="
 GOT=$(CLAUDE_PROJECTS_DIR="$TMP/empty" bash "$FZ" estimate)
 [ "$GOT" = "UNKNOWN" ] && ok "UNKNOWN 반환" || fail "empty estimate: got=$GOT"
+
+echo "== estimate: HUD 캐시가 있으면 정확값 우선 =="
+mkdir -p "$FREEZE_HUD_CACHE"
+HUD_AT=$(( NOW + 1234 ))
+echo "{\"rate_limits\":{\"five_hour\":{\"used_percentage\":38,\"resets_at\":$HUD_AT}}}" > "$FREEZE_HUD_CACHE/stdin.$SESSION.json"
+GOT=$(bash "$FZ" estimate)
+[ "$GOT" = "$HUD_AT" ] && ok "HUD resets_at 우선 ($GOT)" || fail "HUD estimate: got=$GOT want=$HUD_AT"
+
+echo "== estimate: HUD resets_at 이 과거면 폴백 =="
+echo "{\"rate_limits\":{\"five_hour\":{\"resets_at\":$(( NOW - 10 ))}}}" > "$FREEZE_HUD_CACHE/stdin.$SESSION.json"
+GOT=$(bash "$FZ" estimate)
+[ "$GOT" = "$EXPECT" ] && ok "과거값 무시하고 역산 폴백" || fail "stale HUD: got=$GOT want=$EXPECT"
+rm -f "$FREEZE_HUD_CACHE/stdin.$SESSION.json"
 
 echo "== reserve + thaw (mock claude) =="
 MOCK="$TMP/mock-claude"; CALLS="$TMP/calls.log"
