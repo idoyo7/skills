@@ -34,6 +34,8 @@ echo "코드 안은 평서체다"
 `인라인 코드다` 와 https://example.com/문서다 는 손대면 안 된다.
 
 그는 "이건 버그다"라고 썼다.
+
+확인하고 갑시다. 이제 시작합시다.
 EOF
 
 echo "== scan: 평서체 검출 =="
@@ -57,6 +59,8 @@ guard_line 13 "코드블록 내부"
 guard_line 20 "표 행"
 case " $HITLINES " in *" 7 "*) ok "산문은 정상 검출";; *) fail "산문 미검출 (hits: $HITLINES)";; esac
 case " $HITLINES " in *" 10 "*) ok "불릿 뒷문장 검출";; *) fail "불릿 미검출 (hits: $HITLINES)";; esac
+# `~ㅂ시다` 는 이미 존댓말 청유형이다 — 평서체로 오탐하면 안 된다 (실데이터에서 "갑시다" 오탐)
+guard_line 38 "청유형 ㅂ시다"
 
 echo "== fix-broken: 파손 복구 =="
 cat > "$TMP/b.md" <<'EOF'
