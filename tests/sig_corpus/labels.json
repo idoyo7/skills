@@ -1,0 +1,176 @@
+{
+  "files": [
+    {
+      "path": "ai_01_max.md",
+      "label": "heavy_ai",
+      "expect_grade_in": ["C", "D"],
+      "expect_triggered": ["L1", "L2", "L4", "L5", "L6", "L7", "L8", "L9"],
+      "expect_not_triggered": []
+    },
+    {
+      "path": "ai_02_subtle.md",
+      "label": "mild_ai",
+      "expect_grade_in": ["B", "C"],
+      "expect_triggered": ["L1", "L3", "L4"],
+      "expect_not_triggered": ["L2", "L5", "L6", "L7", "L8", "L9", "L10"]
+    },
+    {
+      "path": "ai_03_table_heavy.md",
+      "label": "mild_ai",
+      "expect_grade_in": ["A", "B"],
+      "expect_triggered": ["L2"],
+      "expect_not_triggered": ["L1", "L6", "L7", "L8", "L9", "L10"]
+    },
+    {
+      "path": "human_01_essay.md",
+      "label": "human",
+      "expect_grade_in": ["A"],
+      "expect_triggered": [],
+      "expect_not_triggered": ["L1", "L2", "L4", "L5", "L6", "L7", "L8", "L9", "L10", "L11"]
+    },
+    {
+      "path": "human_02_reference.md",
+      "label": "human",
+      "expect_grade_in": ["A", "B"],
+      "expect_triggered": [],
+      "expect_not_triggered": ["L1", "L6", "L7", "L8", "L9", "L10"],
+      "note": "L2(표 밀도)는 report축이라 표 2개/섹션 4개=0.5로 경계선 발동 가능 - 실제 사람 레퍼런스 문서도 표가 많으면 report축은 뜰 수 있음(정책상 정상, actionable_score에는 미반영)"
+    },
+    {
+      "path": "human_03_notes.md",
+      "label": "human",
+      "expect_grade_in": ["A"],
+      "expect_triggered": [],
+      "expect_not_triggered": ["L1", "L2", "L4", "L5", "L6", "L7", "L8", "L9", "L10"]
+    },
+    {
+      "path": "edge_01_empty_ish.md",
+      "label": "human",
+      "expect_grade_in": ["A"],
+      "expect_triggered": [],
+      "expect_not_triggered": ["L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8", "L9", "L10", "L11", "L12", "L13", "L14"],
+      "note": "표본 부족(헤딩1·문단2) - 모든 지표가 발동 조건의 최소 표본 수(≥3~5)를 못 채워야 정상"
+    },
+    {
+      "path": "ai_04_medium.md",
+      "label": "heavy_ai",
+      "expect_grade_in": ["C", "D"],
+      "expect_triggered": ["L1", "L6", "L8"],
+      "expect_not_triggered": [],
+      "note": "50줄 안팎 중간 길이 보강 케이스. short_label 볼드리드 불릿 9/9=1.0, 이모지 3개(🚀⚡⚠️), 마지막 '## 정리' 섹션이 본문 재진술(overlap 높음)."
+    },
+    {
+      "path": "human_04_medium.md",
+      "label": "human",
+      "expect_grade_in": ["A", "B"],
+      "expect_triggered": [],
+      "expect_not_triggered": ["L1", "L6", "L7", "L8", "L9", "L10"],
+      "note": "50줄 안팎 중간 길이 보강 케이스. 불릿 3개 있으나 볼드리드 아님(코드 인용 뒤 평서문), 요약 섹션 없이 '남은 의문'으로 열린 채 끝남, 문단 길이 들쭉날쭉."
+    },
+    {
+      "path": "edge_02_all_code.md",
+      "label": "human",
+      "expect_grade_in": ["A"],
+      "expect_triggered": [],
+      "expect_not_triggered": ["L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8", "L9", "L10", "L11", "L12", "L13", "L14"],
+      "note": "함정 파일: 코드펜스 내부에 '#!/usr/bin/env bash', '# 롤백용' 같은 라인이 있어 코드펜스를 헤딩 파서에서 제대로 제외하지 않으면 L11/L14 등이 오탐한다. naive grep('^#')는 실제로 이 파일에서 헤딩 3개로 오인식했음(진짜 헤딩은 1개) - 구현체는 코드펜스 상태머신으로 반드시 걸러야 함"
+    },
+    {
+      "path": "temp/CPU_Burst_학습노트.md",
+      "real": true,
+      "label": "heavy_ai",
+      "expect_grade_in": ["C", "D"],
+      "expect_triggered": ["L2", "L6", "L7", "L10"],
+      "expect_not_triggered": ["L1", "L8", "L9"],
+      "observed": {
+        "bullets_total": 39, "bold_lead_bullets": 7, "bold_lead_ratio": 0.18,
+        "emoji_count": 20, "hr_count": 17, "sections_h2": 17,
+        "table_blocks": 17, "blockquote_blocks": 15
+      },
+      "rationale": "볼드리드 불릿 비율은 0.18로 L1 임계 미달 - 볼드는 대부분 문장 중간 강조용. 이모지 20개(⚠️💡🔑✅❌), 섹션당 --- 1개꼴(17/17), 인용블록 15개(대부분 출처 없는 '핵심:'/'주의:' 강조용) - 3개 actionable 지표가 동시 발동해 heavy_ai로 판정. [라운드2 수정] L9는 발동하면 안 된다 - 서두(H1 직후) 첫 인용블록은 '출처'/'원자료' 라벨의 방법론 캡션이라 classify_quote가 caption으로 걸러야 한다. 라운드1 구현은 L9 창을 '다음 섹션 시작 전까지'로 잡아 그 뒤에 나오는 '## 0. 한 문장' 섹션의 진짜 요약 인용까지 창 안에 들어와 caption 블록이 아닌 그 요약 인용이 트리거된 것처럼 보였는데, 스펙이 정의한 '첫 헤딩 직후 3블록'으로 창을 좁히면 그 요약 인용은 창 밖으로 벗어나 L9가 조용해진다 - 창 정의 버그였지 위양성 판정이 아니었다."
+    },
+    {
+      "path": "monitoring/logging-observability-intro.md",
+      "real": true,
+      "label": "heavy_ai",
+      "expect_grade_in": ["C", "D"],
+      "expect_triggered": ["L1", "L2", "L5", "L7", "L9", "L10"],
+      "expect_not_triggered": ["L6", "L8"],
+      "observed": {
+        "bullets_total": 32, "bold_lead_bullets": 25, "bold_lead_ratio": 0.78,
+        "emoji_count": 0, "hr_count": 8, "sections_h2": 8,
+        "table_blocks": 7, "blockquote_blocks": 11
+      },
+      "rationale": "'솔루션별 특징' 7개 서브섹션이 전부 '- **강점**:/**약점**:/**제약**:' 볼드리드 불릿로 시작(비율 0.78) - L1 강발동. 섹션마다 --- 1개(8/8), '> 판단: ...' 무출처 인용블록 11개, '우리 케이스' 섹션에 ├─└─▼ 화살표 ASCII 트리 다이어그램까지 있어 report축(L2/L5)도 함께 뜬다. 마지막 섹션은 '## 참고'(레퍼런스 목록)라 L8은 발동 안 함 - 딥리서치형 AI 문서의 전형적 지문."
+    },
+    {
+      "path": "karpenter-consolidation-analysis/KARPENTER-FINAL.md",
+      "real": true,
+      "label": "mild_ai",
+      "expect_grade_in": ["B", "C"],
+      "expect_triggered": ["L2", "L7"],
+      "expect_not_triggered": ["L1", "L6", "L8", "L9", "L10"],
+      "observed": {
+        "bullets_total": 100, "bold_lead_bullets": 34, "bold_lead_ratio": 0.34,
+        "emoji_count": 0, "hr_count": 12, "sections_h2": 11,
+        "table_blocks": 15, "blockquote_blocks": 4
+      },
+      "rationale": "볼드리드 비율 0.34로 L1 임계 미달 - 대부분 코드/라인 인용이 섞인 긴 분석 문단이라 순수 라벨형 불릿이 아님. 이모지 전무, 마지막 섹션도 '## 11. 미확인 / 근거 불충분'이라 L8 미발동. --- 12개/섹션11개(L7)만 발동. [라운드2 수정] L9·L10은 발동하면 안 된다 - 서두 '> 코드 근거 checkout: ...' 인용은 checkout 키워드로 classify_quote가 caption 판정하므로 L10에서는 애초에 제외됐었으나(round1에서 이미 해결), L9는 창 정의 버그로 여전히 오탐했다: '다음 섹션 시작 전까지'를 창으로 쓰면 첫 섹션 '## 1. 결론 4줄' 전체(볼드리드 분석 문단 (a)~(d))가 창에 들어와, (a) 문단이 BOLD_LEAD_PARA_RE에 매치돼 '볼드리드 문단=TL;DR'로 오판했다. (a) 라벨은 '(a) 블로그 원고 주장 판정'처럼 열거형 각주이지 '요약/핵심/TL;DR' 같은 요약 신호가 아니다. 스펙의 '첫 헤딩 직후 3블록'으로 창을 좁히고, 볼드리드 문단은 라벨 자체가 TL;DR 키워드와 매치할 때만 인정하도록 고쳐 두 신호 모두 조용해졌다 - 실측 근거가 촘촘한 진짜 기술조사 보고서이므로 human에 가깝다는 원래 관찰이 맞았고, 스코어러 쪽 결함이었다."
+    },
+    {
+      "path": "nextra-blog/WRITING_STYLE.md",
+      "real": true,
+      "label": "heavy_ai",
+      "expect_grade_in": ["C", "D"],
+      "expect_triggered": ["L1", "L6", "L7", "L9"],
+      "expect_not_triggered": ["L2", "L8"],
+      "observed": {
+        "bullets_total": 100, "bold_lead_bullets": 42, "bold_lead_ratio": 0.42,
+        "emoji_count": 3, "hr_count": 17, "sections_h2": 17,
+        "table_blocks": 1, "blockquote_blocks": 3
+      },
+      "rationale": "볼드리드 비율 0.42로 L1 경계 발동. '⚠️ 나쁜 버릇:' 이모지 3회(L6), 섹션당 --- 거의 1개(17/17, L7), 서두에 문서 목적을 설명하는 인용블록(L9)까지 - 정작 이 문서가 묘사하는 대상(mont-kim 본인 글)은 말줄임표·오탈자·불규칙한 문단호흡이 특징인 매우 '인간적인' 글쓰기인데, 그걸 담는 그릇(이 가이드 문서 자체)은 교과서적인 AI 산출물 골격이다 - 스코어러가 '내용'이 아니라 '레이아웃 용기'를 봐야 한다는 걸 보여주는 좋은 사례."
+    },
+    {
+      "path": "hotdeal/README.md",
+      "real": true,
+      "label": "human",
+      "expect_grade_in": ["A", "B"],
+      "expect_triggered": [],
+      "expect_not_triggered": ["L1", "L2", "L6", "L7", "L8", "L9", "L10"],
+      "observed": {
+        "bullets_total": 25, "bold_lead_bullets": 0, "bold_lead_ratio": 0.0,
+        "emoji_count": 0, "hr_count": 0, "sections_h2": 9,
+        "table_blocks": 1, "blockquote_blocks": 0
+      },
+      "rationale": "볼드리드 불릿 0개, 이모지 0개, --- 0개, 인용블록 0개 - actionable 10개 지표 전부 조용함. 큰 env var 표 1개는 실제 필요(변수 20+개 나열)로 생긴 것이지 장식이 아니고, 표/섹션 비율도 낮아(1/9) L2도 안 뜸. 전형적인 담백한 오픈소스 README - 강한 negative 기준점."
+    },
+    {
+      "path": "jekyll/moonwalk_on_windows.md",
+      "real": true,
+      "label": "human",
+      "expect_grade_in": ["A"],
+      "expect_triggered": [],
+      "expect_not_triggered": ["L1", "L2", "L3", "L4", "L5", "L6", "L7", "L8", "L9", "L10", "L11", "L12", "L13", "L14"],
+      "observed": {
+        "bullets_total": 0, "bold_lead_bullets": 0, "emoji_count": 0,
+        "hr_count": 0, "sections_h2": 1, "table_blocks": 0, "blockquote_blocks": 0
+      },
+      "rationale": "9줄짜리 초미니 개인 메모(Ruby devkit 설치 순서). 표본이 모든 지표의 최소 발동 조건보다 훨씬 작아 전 지표 미발동이 맞다 - edge_01/02와 함께 '표본 부족 시 침묵' 회귀 테스트로 쓸 수 있는 실물."
+    },
+    {
+      "path": "homelab/2026-05-08-node1-fan-quiet-and-power-limit.md",
+      "real": true,
+      "label": "human",
+      "expect_grade_in": ["A", "B"],
+      "expect_triggered": [],
+      "expect_not_triggered": ["L1", "L6", "L7", "L8", "L9", "L10"],
+      "observed": {
+        "bullets_total": 20, "bold_lead_bullets": 4, "bold_lead_ratio": 0.2,
+        "emoji_count": 0, "hr_count": 0, "sections_h2": 7,
+        "table_blocks": 2, "blockquote_blocks": 0
+      },
+      "rationale": "볼드리드 비율 0.2로 L1 미달, 이모지·---·인용블록 전무. 표 2개(작업전 팬 상태, before/after 결과)는 실측 수치 비교용으로 자연스러운 사용이고 밀도도 낮음(2/7=0.29 <0.5, L2도 미발동). 진단→작업→결과→운영메모→리스크로 이어지는 비정형 실무 로그 - 사람이 쓴 홈랩 작업일지의 전형."
+    }
+  ]
+}
