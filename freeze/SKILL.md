@@ -53,7 +53,9 @@ bash $FZ/freeze.sh reserve --at auto --cwd "$(pwd)" --handoff .omc/handoffs/free
 
 ## 땡 (자동)
 
-슬리퍼(`thaw.sh`)가 알아서 한다: 땡 시각까지 대기 → `claude -p --model haiku "ok"` 프로브로 한도 해제 확인(실패 시 15분 간격 최대 12회) → `claude -p --resume <세션> --permission-mode acceptEdits` 로 재개. 재개 세션은 handoff 를 읽고 이어서 작업한 뒤 결과를 handoff 하단 `## 재개 결과` 에 남긴다.
+슬리퍼(`thaw.sh`)가 알아서 한다: 땡 시각까지 대기 → `claude -p --model haiku "ok"` 프로브로 한도 해제 확인(실패 시 15분 간격 최대 12회) → `claude -p --resume <세션>` 으로 재개. 재개 세션은 handoff 를 읽고 이어서 작업한 뒤 결과를 handoff 하단 `## 재개 결과` 에 남긴다.
+
+재개 권한은 기본 `bypassPermissions` 다(사용자 결정, 2026-08-17) — 무인 재개엔 승인자가 없어 `acceptEdits` 로는 Bash 가 전부 거부돼 실작업이 안 되는 것을 E2E 로 확인했다. 민감한 작업이면 예약 시 `--permission-mode acceptEdits` 로 하향할 수 있고, 그 경우 재개 세션은 파일 편집만 가능하다.
 
 ## 수동 조작
 

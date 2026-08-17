@@ -76,6 +76,17 @@ done
 [ "$STATUS" = "done" ] && ok "thaw 완주 (status=done)" || fail "thaw status=$STATUS"
 grep -q -- "--resume $SESSION" "$CALLS" && ok "resume 호출 (세션 id 일치)" || fail "resume 호출 없음: $(cat "$CALLS" 2>/dev/null)"
 grep -q -- "--model haiku" "$CALLS" && ok "haiku 프로브 선행" || fail "프로브 없음"
+grep -q -- "--permission-mode bypassPermissions" "$CALLS" && ok "기본 권한 bypassPermissions" || fail "권한 모드: $(grep resume "$CALLS")"
+
+echo "== reserve --permission-mode 오버라이드 =="
+: > "$CALLS"; echo "# h" > "$HANDOFF"
+bash "$FZ" reserve --at +2s --cwd "$FAKE_CWD" --handoff "$HANDOFF" --job permjob --permission-mode acceptEdits > /dev/null
+for i in $(seq 1 20); do
+  STATUS=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$FREEZE_STATE_DIR/permjob/reservation.json')).status)")
+  [ "$STATUS" = "done" ] && break
+  sleep 1
+done
+grep -q -- "--permission-mode acceptEdits" "$CALLS" && ok "오버라이드 반영" || fail "오버라이드 미반영: $(grep resume "$CALLS")"
 
 echo "== cancel =="
 echo "# h" > "$HANDOFF"
