@@ -41,7 +41,7 @@ import hashlib
 import json
 import re
 import sys
-from collections import deque
+from collections import Counter, deque
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -786,12 +786,11 @@ def apply_restore(prose_text: str, map_obj: dict, repair_headings: bool = True):
         elif headings:
             report["heading_count_mismatch"] = True
 
-    restored_text = "\n".join(out_lines)
+    # mask 의 join 과 정확히 대칭이어야 한다. endswith("\n") 로 끝개행 유무를 추론하면
+    # 마지막 줄이 빈 줄일 때(원본이 빈 줄로 끝날 때) join 결과가 이미 "\n" 으로 끝나
+    # 끝개행이 이미 붙은 것으로 오판하고 한 개를 잃는다.
     want_trailing = bool(map_obj.get("trailing_newline"))
-    if want_trailing and not restored_text.endswith("\n"):
-        restored_text += "\n"
-    elif not want_trailing and restored_text.endswith("\n"):
-        restored_text = restored_text[:-1]
+    restored_text = join_lines_keep_structure(out_lines, want_trailing)
 
     return restored_text, report
 
@@ -829,26 +828,40 @@ def run_verify(src_text: str, restored_text: str, map_obj: dict, allow_restructu
     map_struct = map_obj.get("structure", {})
     restored_struct = compute_structure(restored_text)
 
-    # 블록 세그먼트: 정확히 1회씩만 등장해야 한다 (0회=소실, 2회+=중복)
+    # 블록 세그먼트 등장 횟수 검증.
+    # 서로 텍스트가 완전히 같은 블록 세그먼트가 여러 개일 수 있다 — Hugo 문서의
+    # `{{< /callout >}}` 닫는 태그처럼 같은 줄이 문서에 N번 나오면 세그먼트도 N개다.
+    # 세그먼트마다 count == 1 을 요구하면 그런 문서는 "무편집 복원"에서도 전부 FAIL 한다.
+    # 그래서 텍스트별로 묶어, 같은 텍스트를 가진 세그먼트 개수와 실제 등장 횟수를 비교한다.
     block_segments = [s for s in segments if not s.get("inline")]
+    expected_counts = Counter(s.get("text", "") for s in block_segments if s.get("text"))
+    for text, expected in expected_counts.items():
+        cnt = restored_text.count(text)
+        if cnt != expected:
+            same = [s for s in block_segments if s.get("text") == text]
+            fail(
+                f"{same[0]['kind']}_content",
+                f"세그먼트 {'·'.join(s['id'] for s in same)}({same[0]['kind']}) 텍스트가 "
+                f"복원본에 {cnt}회 등장합니다(기대: {expected}회).",
+            )
+
+    # 블록 세그먼트 등장 순서 보존.
+    # 텍스트가 같은 세그먼트는 find() 가 늘 첫 번째 위치를 돌려주므로 전부 같은 위치로
+    # 접혀 순서가 뒤섞인 것처럼 보인다 — 텍스트별 커서를 두고 왼쪽부터 차례로 소비한다.
+    positions = []
+    all_found = True
+    cursor: dict[str, int] = {}
     for seg in block_segments:
         text = seg.get("text", "")
         if not text:
+            all_found = False
+            positions.append((-1, seg["id"]))
             continue
-        cnt = restored_text.count(text)
-        if cnt != 1:
-            fail(
-                f"{seg['kind']}_content",
-                f"세그먼트 {seg['id']}({seg['kind']}) 가 복원본에 {cnt}회 등장합니다(기대: 1회).",
-            )
-
-    # 블록 세그먼트 등장 순서 보존
-    positions = []
-    all_found = True
-    for seg in block_segments:
-        idx = restored_text.find(seg.get("text", "")) if seg.get("text") else -1
+        idx = restored_text.find(text, cursor.get(text, 0))
         if idx < 0:
             all_found = False
+        else:
+            cursor[text] = idx + len(text)
         positions.append((idx, seg["id"]))
     if all_found and positions:
         order_now = [sid for _idx, sid in sorted(positions, key=lambda p: p[0])]
@@ -869,8 +882,6 @@ def run_verify(src_text: str, restored_text: str, map_obj: dict, allow_restructu
         )
 
     # link target 멀티셋
-    from collections import Counter
-
     lt_orig = Counter(map_struct.get("link_targets", []))
     lt_rest = Counter(restored_struct.get("link_targets", []))
     if lt_orig != lt_rest:
