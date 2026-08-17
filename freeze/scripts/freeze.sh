@@ -199,6 +199,7 @@ cmd_status() {
     printf '%-24s %-8s 땡=%s sleeper=%s\n' "$job" "$status" "$(date -d "@$epoch" '+%m/%d %H:%M')" "$alive"
   done
   [ "$found" = 0 ] && echo "예약 없음"
+  return 0   # found=1 일 때 && 단락이 exit 1 로 새는 것 방지
 }
 
 cmd_cancel() {
