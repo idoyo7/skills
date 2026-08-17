@@ -27,6 +27,8 @@ RESUME_AT=$(field resume_at)
 SESSION=$(field session_id)
 CWD=$(field cwd)
 HANDOFF=$(field handoff)
+PERM=$(field permission_mode)
+[ -n "$PERM" ] || PERM="bypassPermissions"   # 구버전 reservation 호환
 
 echo "[$(date '+%F %T')] thaw 시작 — job=$JOB 땡=$(date -d "@$RESUME_AT" '+%F %T')"
 
@@ -62,7 +64,7 @@ fi
 set_status "running"
 echo "[$(date '+%F %T')] 재개: session=$SESSION cwd=$CWD"
 cd "$CWD" || { set_status "failed"; exit 1; }
-"$CLAUDE_BIN" -p --resume "$SESSION" --permission-mode acceptEdits \
+"$CLAUDE_BIN" -p --resume "$SESSION" --permission-mode "$PERM" \
   "땡 — freeze 스킬로 예약된 재개다. $HANDOFF 를 읽고 중단된 작업을 이어서 완료해줘. 끝나면 같은 파일 하단에 '## 재개 결과' 섹션으로 한 일과 검증 결과를 기록해줘." \
   > "$DIR/resume-output.txt" 2>&1
 rc=$?

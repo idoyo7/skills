@@ -140,7 +140,9 @@ detect_session() {
 }
 
 cmd_reserve() {
-  local at="" cwd="" handoff="" session="" job=""
+  # 기본 bypassPermissions — 무인 재개엔 승인자가 없어 acceptEdits 로는 Bash 가 전부 거부된다(E2E 실측).
+  # 사용자 명시 결정(2026-08-17). --permission-mode 로 건별 하향 가능.
+  local at="" cwd="" handoff="" session="" job="" perm="bypassPermissions"
   while [ $# -gt 0 ]; do
     case "$1" in
       --at) at="$2"; shift 2;;
@@ -148,6 +150,7 @@ cmd_reserve() {
       --handoff) handoff="$2"; shift 2;;
       --session) session="$2"; shift 2;;
       --job) job="$2"; shift 2;;
+      --permission-mode) perm="$2"; shift 2;;
       *) echo "ERROR: unknown arg $1" >&2; return 1;;
     esac
   done
@@ -161,13 +164,13 @@ cmd_reserve() {
   local dir="$STATE_ROOT/$job"
   mkdir -p "$dir"
   node -e '
-const [p, job, session, cwd, handoff, epoch] = process.argv.slice(1);
+const [p, job, session, cwd, handoff, epoch, perm] = process.argv.slice(1);
 require("fs").writeFileSync(p, JSON.stringify({
   job, session_id: session, cwd, handoff,
   resume_at: parseInt(epoch), created_at: Math.floor(Date.now()/1000),
-  status: "frozen"
+  permission_mode: perm, status: "frozen"
 }, null, 2));
-' "$dir/reservation.json" "$job" "$session" "$cwd" "$handoff" "$epoch"
+' "$dir/reservation.json" "$job" "$session" "$cwd" "$handoff" "$epoch" "$perm"
 
   setsid nohup "$SCRIPT_DIR/thaw.sh" "$job" >> "$dir/thaw.log" 2>&1 < /dev/null &
   echo $! > "$dir/sleeper.pid"
