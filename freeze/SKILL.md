@@ -20,6 +20,30 @@ argument-hint: "[땡 시각 — 예: 15:00, +2h, auto(기본)] [--job <이름>]"
 FZ=~/.claude/skills/freeze/scripts
 ```
 
+## 두 가지 모드
+
+| 모드 | 언제 | 명령 |
+|---|---|---|
+| **얼음** (사후) | 이미 한도에 걸렸거나 지금 멈춰야 할 때 | `reserve --at auto` |
+| **무장** (선예약) | 긴 작업을 시작할 때 미리 걸어두고 남은 쿼터를 끝까지 태우고 싶을 때 | `arm` |
+
+무장 모드가 장시간 작업의 기본이다. 한도에 막히는 순간엔 세션이 아무 일도 못 하므로(handoff 를 쓸 토큰조차 없다) **막히기 전에 걸어두는 쪽이 안전하다.** `--resume` 은 대화 전체를 복원하므로 재개 세션은 문맥을 그대로 갖고 시작한다 — 그래서 무장 시점의 handoff 는 진행 로그가 아니라 **목표와 완료 기준**만 적으면 된다.
+
+```
+작업 시작 ─▶ arm (땡 예약 + 목표 handoff)
+             ├─ 계속 진행 … 남은 쿼터 소진
+             ├─ 막힘 → 그대로 두면 된다 (슬리퍼 대기 중)
+             └─ 먼저 끝남 → done (예약이 재개 없이 종료)
+                        땡 ─▶ 프로브 ─▶ 재개 ─▶ 못 끝내면 스스로 다음 창 arm (체인)
+```
+
+```bash
+bash $FZ/freeze.sh arm --cwd "$(pwd)" --handoff .omc/handoffs/freeze-....md   # 시작할 때
+bash $FZ/freeze.sh done --handoff .omc/handoffs/freeze-....md                 # 다 끝냈을 때
+```
+
+체인은 기본 2회(`--chain-left`)다. 재개 세션이 그 창 안에 못 끝내면 다음 창을 스스로 걸고, 남은 횟수가 0이 되면 멈춘다 — 무한히 도는 것을 막는 안전장치다.
+
 ## 얼음 절차 (토큰 최소 — 딱 4단계, 추가 탐색 금지)
 
 **1. 하던 일 세우기.** 실행 중인 백그라운드 태스크·워크플로우가 있으면 중지(TaskStop)하고, 각각 어디까지 갔는지만 짧게 파악한다. 새 작업을 시작하지 않는다.
@@ -65,6 +89,7 @@ bash $FZ/freeze.sh reserve --at auto --cwd "$(pwd)" --handoff .omc/handoffs/free
 | 사용자가 먼저 돌아와 직접 이어서 하겠다 | `bash $FZ/freeze.sh cancel <job>` 후 handoff 읽고 인라인 진행 |
 | 컨테이너 재시작으로 슬리퍼가 죽었다 | `bash $FZ/freeze.sh check` — 시각 지난 예약을 즉시 실행 |
 | 땡 시각만 미리 알고 싶다 | `bash $FZ/freeze.sh estimate` |
+| 무장해 둔 작업을 다 끝냈다 | `bash $FZ/freeze.sh done --handoff <경로>` |
 
 ## 한계
 
