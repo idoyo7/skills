@@ -40,7 +40,7 @@ FZ=~/.claude/skills/freeze/scripts
 
 **3. 땡 시각 결정.**
 - 사용자가 시각을 줬거나 한도 에러 메시지에 리셋 시각이 보이면 그걸 쓴다 (`HH:MM` 또는 `+2h` 형태).
-- 없으면 `auto` — reserve 가 transcript 로 5시간 윈도우를 역산한다.
+- 없으면 `auto` — reserve 가 OMC HUD 캐시(statusline payload 의 `rate_limits.five_hour.resets_at`, 정확값)에서 읽고, 캐시가 없으면 transcript 로 5시간 윈도우를 역산한다.
 - reserve 가 `땡 시각 추정 실패` 로 죽으면 그때 사용자에게 리셋 시각을 묻는다 (AskUserQuestion).
 
 **4. 예약 + 종료 보고.**
@@ -68,4 +68,4 @@ bash $FZ/freeze.sh reserve --at auto --cwd "$(pwd)" --handoff .omc/handoffs/free
 
 - 슬리퍼는 detached 프로세스라 **머신·컨테이너가 재시작되면 죽는다.** 예약 자체는 상태 파일(`~/.local/state/freeze/<job>/`)에 남으니 `check` 로 캐치업한다.
 - 헤드리스 재개는 앱 세션 목록에 안 뜬다. 결과는 handoff 의 `## 재개 결과` 와 `~/.local/state/freeze/<job>/resume-output.txt` 로 확인.
-- 땡 자동 추정은 ccusage 식 근사(첫 활동 시각을 정시로 내림 + 5h)다. 실제 리셋과 몇 분 어긋날 수 있어 프로브 재시도가 그 오차를 흡수한다.
+- 땡 자동 결정은 HUD 캐시(`~/.claude/hud/cache/stdin.*.json`)가 있으면 정확하다. 캐시가 없을 때만 ccusage 식 근사(첫 활동 정시 내림 + 5h)로 폴백하는데 이건 수 시간 어긋날 수 있다 — 프로브 재시도(15분 × 12회)가 이르게 잡힌 오차는 흡수하지만, 늦게 잡히면 그만큼 재개가 늦어진다.
