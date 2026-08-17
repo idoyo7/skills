@@ -48,7 +48,8 @@ export function maskInline(line) {
 const PLAIN_END = /([가-힣]{1,10}다)(?=([.!?…]|$))/g;
 
 // "~다" 지만 평서체 종결이 아닌 것들 — 연결어미·관형형이라 바꾸면 문법이 깨진다.
-const NOT_ENDING = /(니다|습니다|ㅂ니다|겠다는|다는|다면|다가|다고|다며|다시|보다|아니다만)$/;
+// `시다`(갑시다·합시다·봅시다)는 이미 존댓말 청유형이다 — 실데이터에서 오탐으로 확인.
+const NOT_ENDING = /(니다|습니다|ㅂ니다|시다|겠다는|다는|다면|다가|다고|다며|보다|아니다만)$/;
 
 export function findPlainEndings(text) {
   const lines = text.split('\n');
