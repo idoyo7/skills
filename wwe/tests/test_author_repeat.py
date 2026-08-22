@@ -523,5 +523,211 @@ class TestClsClassification(unittest.TestCase):
                           f"유효하지 않은 cls: {f['cls']}")
 
 
+
+@unittest.skipIf(_script_missing_reason(), _script_missing_reason() or "")
+class TestDefectFixes(unittest.TestCase):
+    """결함 수정 검증 — n-gram 경계, 예시 문맥, 기능어/서술격 분류."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.td = Path(self.tmpdir.name)
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    # ------------------------------------------------------------------
+    # Fix 1: n-gram 줄 경계 — 서로 다른 줄의 어절을 이어 붙이지 않는다
+    # ------------------------------------------------------------------
+
+    def test_ngram_no_cross_line(self):
+        """서로 다른 줄의 어절을 이어 붙인 n-gram이 프로필에 없어야 한다.
+
+        줄 A 마지막: "원문"
+        줄 B 처음:   "원문"
+        → "원문 원문" n-gram이 생성되면 안 된다.
+        """
+        doc_content = (
+            "# 경계 테스트\n\n"
+            "이 문서에서 원문이 중요하다.\n\n"  # 줄 A: ends with "원문이"
+            "원문 표현을 그대로 살려야 한다.\n\n"  # 줄 B: starts with "원문"
+            "그 원문 기준을 지킨다.\n\n"
+            "원문 보존이 핵심이다.\n\n"
+        )
+        # 5개 코퍼스 문서에 같은 내용을 넣어 프로필을 빌드한다
+        for i in range(5):
+            (self.td / f"doc_{i}.md").write_text(doc_content, encoding="utf-8")
+        profile_path = self.td / "profile.json"
+        r = run_ar([
+            "build", "--corpus", str(self.td), "--out", str(profile_path),
+            "--min-docs", "2", "--min-doc-ratio", "0.2",
+        ])
+        self.assertEqual(r.returncode, 0)
+        profile = json.loads(profile_path.read_text(encoding="utf-8"))
+        keys = {it["key"] for it in profile["items"]}
+        # "원문 원문"은 줄 경계를 넘어야만 만들어지는 n-gram — 없어야 한다
+        self.assertNotIn("원문 원문", keys,
+                         '"원문 원문" n-gram이 생성됐다 (줄 경계 버그)')
+
+    def test_table_rows_excluded(self):
+        """표 행(| 로 시작)의 어절이 산문 어절과 n-gram을 만들지 않는다.
+
+        표 셀 "보존"이 앞 줄 산문 "원문"과 붙어 "원문 보존" n-gram이 되면 안 된다.
+        """
+        doc_content = (
+            "# 표 경계 테스트\n\n"
+            "원문을 중심으로 작업한다.\n\n"  # 산문 줄
+            "| 항목 | 보존 여부 |\n"          # 표 행
+            "| --- | --- |\n"
+            "| 스크립트 | 없이 |\n"
+            "\n산문이 다시 이어진다.\n\n"
+        )
+        for i in range(5):
+            (self.td / f"tdoc_{i}.md").write_text(doc_content, encoding="utf-8")
+        profile_path = self.td / "tprofile.json"
+        r = run_ar([
+            "build", "--corpus", str(self.td), "--out", str(profile_path),
+            "--min-docs", "2", "--min-doc-ratio", "0.2",
+        ])
+        self.assertEqual(r.returncode, 0)
+        profile = json.loads(profile_path.read_text(encoding="utf-8"))
+        keys = {it["key"] for it in profile["items"]}
+        # 표 셀과 산문이 만들어야 할 n-gram들 — 없어야 한다
+        for forbidden in ("원문 보존", "보존 없이", "스크립트 없이"):
+            self.assertNotIn(forbidden, keys,
+                             f'표 행+산문 합성 n-gram "{forbidden}" 이 생성됐다')
+
+    # ------------------------------------------------------------------
+    # Fix 2: 예시 문맥 — 실제 키 위치 앞뒤 20자
+    # ------------------------------------------------------------------
+
+    def test_example_context_contains_key(self):
+        """scan --json 의 example 필드에 키 어간이 실제로 포함돼야 한다."""
+        doc = self.td / "ex_test.md"
+        doc.write_text(
+            "# 예시 테스트\n\n"
+            "갈랐다는 표현이 여기서 나온다.\n\n"
+            "두 번째로 갈랐다는 말이 등장한다.\n\n"
+            "세 번째로 갈랐다는 흐름이 이어진다.\n\n"
+            "네 번째로 갈랐다는 단어를 또 쓴다.\n\n",
+            encoding="utf-8",
+        )
+        r = run_ar(["scan", "--src", str(doc), "--json"])
+        self.assertEqual(r.returncode, 0)
+        data = json.loads(r.stdout)
+        # "갈랐" (어간)이 포함된 finding 을 찾는다
+        galr_findings = [
+            f for f in data["findings"]
+            if "갈" in f["key"] or "갈랐" in f["key"]
+        ]
+        for f in galr_findings:
+            example = f.get("example", "")
+            if example:
+                # 예시 문맥이 키 어간을 포함해야 한다
+                key_stem = f["key"].split()[0]  # 첫 어간
+                self.assertIn(
+                    key_stem[:2], example,
+                    f'example "{example}" 에 키 어간 "{key_stem}" 이 없다',
+                )
+
+    def test_line_numbers_are_actual_match_lines(self):
+        """lines 배열이 키가 실제로 나타나는 줄번호를 가리켜야 한다."""
+        doc = self.td / "lineno_test.md"
+        # 줄 5, 9, 13 에만 "갈랐다" 를 넣는다 (1-indexed)
+        lines = [
+            "# 줄번호 테스트\n",   # 1
+            "\n",                  # 2
+            "배경 설명이다.\n",     # 3
+            "\n",                  # 4
+            "이 흐름이 갈랐다.\n", # 5 ← 매치
+            "\n",                  # 6
+            "다른 내용이다.\n",     # 7
+            "\n",                  # 8
+            "또 갈랐다.\n",        # 9 ← 매치
+            "\n",                  # 10
+            "무관한 문장이다.\n",   # 11
+            "\n",                  # 12
+            "흐름이 갈랐다.\n",    # 13 ← 매치
+            "\n",                  # 14
+            "끝 문장이다.\n",      # 15
+        ]
+        doc.write_text("".join(lines), encoding="utf-8")
+        r = run_ar(["scan", "--src", str(doc), "--json"])
+        self.assertEqual(r.returncode, 0)
+        data = json.loads(r.stdout)
+        galr_findings = [f for f in data["findings"] if "갈" in f["key"]]
+        if not galr_findings:
+            self.skipTest("갈랐 계열 finding이 없어 줄번호 검증 스킵")
+        for f in galr_findings:
+            for ln in f.get("lines", []):
+                # 매치 줄은 반드시 5, 9, 13 중 하나여야 한다
+                self.assertIn(
+                    ln, [5, 9, 13],
+                    f"줄번호 {ln} 은 실제 매치 줄(5,9,13)이 아니다",
+                )
+
+    # ------------------------------------------------------------------
+    # Fix 3: 기능어 어간·서술격 분류
+    # ------------------------------------------------------------------
+
+    def test_functional_verb_stem_filtered(self):
+        """않는다·없이·위에 등 기능어가 profile 에 verb 로 올라오지 않는다."""
+        # 기능어를 반복적으로 사용하는 문서
+        func_doc = (
+            "# 기능어 반복 문서\n\n"
+            "이 기능이 없이는 작동하지 않는다.\n"
+            "그 방법이 없이는 결과가 나오지 않는다.\n"
+            "위에서 언급한 대로 없이는 안 된다.\n"
+            "없이는 불가능하다.\n\n"
+        )
+        for i in range(5):
+            (self.td / f"func_{i}.md").write_text(func_doc, encoding="utf-8")
+        profile_path = self.td / "func_profile.json"
+        r = run_ar([
+            "build", "--corpus", str(self.td), "--out", str(profile_path),
+            "--min-docs", "2", "--min-doc-ratio", "0.2",
+        ])
+        self.assertEqual(r.returncode, 0)
+        profile = json.loads(profile_path.read_text(encoding="utf-8"))
+        # 기능어 어간이 verb 로 profile 에 올라와서는 안 된다
+        func_stems = {"않", "없", "있", "되", "하", "위", "아래", "때문",
+                      "경우", "대한", "통해", "위해", "따라",
+                      "않는", "않았", "없이", "위에"}
+        for item in profile["items"]:
+            if item.get("cls") == "verb" and item["key"] in func_stems:
+                self.fail(
+                    f'기능어 "{item["key"]}" 가 cls=verb 로 프로필에 올라왔다'
+                )
+
+    def test_copula_stripping_yields_noun(self):
+        """이다/이고/이며 를 벗긴 어간은 cls=verb 가 아닌 noun 이어야 한다.
+
+        "특징이다" → 어간 "특징", cls 는 noun 이어야 한다.
+        """
+        # classify_stem 직접 호출 (스크립트를 임포트하는 방식)
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "author_repeat", str(SCRIPT)
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        cases = [
+            ("특징이다", "특징", "noun"),
+            ("목표이고", "목표", "noun"),
+            ("방향이며", "방향", "noun"),
+            ("갈랐다", "갈랐", "verb"),    # 일반 용언은 여전히 verb
+            ("솔직히", "솔직히", "adv"),   # 부사형은 adv
+        ]
+        for raw, expected_stem, expected_cls in cases:
+            stem, cls = mod.classify_stem(raw)
+            self.assertEqual(
+                stem, expected_stem,
+                f'classify_stem("{raw}") → stem "{stem}", 기대값 "{expected_stem}"',
+            )
+            self.assertEqual(
+                cls, expected_cls,
+                f'classify_stem("{raw}") → cls "{cls}", 기대값 "{expected_cls}"',
+            )
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
