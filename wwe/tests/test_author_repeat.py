@@ -371,5 +371,157 @@ class TestSuggestSubcommand(unittest.TestCase):
         self.assertIn("기존항목", lines, "기존 항목이 사라졌다")
 
 
+@unittest.skipIf(_script_missing_reason(), _script_missing_reason() or "")
+class TestClsClassification(unittest.TestCase):
+    """cls 분류: verb·noun·adv 판별 및 점수 가중 동작 확인."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.td = Path(self.tmpdir.name)
+
+        # 주제 명사 "보존"을 모든 문서에 10회씩 (noun cls)
+        # 습관 동사 "갈랐다"→어간 "갈랐"을 4문서 3회씩 (verb cls)
+        def _make_mixed_doc(include_verb: bool) -> str:
+            lines = ["# 혼합 테스트 문서\n\n"]
+            # 명사 10회
+            for _ in range(10):
+                lines.append("보존 원칙을 지켜야 한다는 점에서 이 방향은 타당하다.\n\n")
+            if include_verb:
+                # 동사 3회
+                for _ in range(3):
+                    lines.append("이 시점에서 흐름이 완전히 갈랐다.\n\n")
+            return "".join(lines)
+
+        for i in range(4):
+            (self.td / f"mixed_{i}.md").write_text(_make_mixed_doc(True), encoding="utf-8")
+        for i in range(2):
+            (self.td / f"noun_only_{i}.md").write_text(_make_mixed_doc(False), encoding="utf-8")
+
+        self.profile_path = self.td / "cls_profile.json"
+        r = run_ar([
+            "build",
+            "--corpus", str(self.td),
+            "--out", str(self.profile_path),
+            "--min-docs", "2",
+            "--min-doc-ratio", "0.2",
+        ])
+        self.assertEqual(r.returncode, 0, f"setUp build 실패:\n{r.stderr}")
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def test_verb_cls_assigned(self):
+        """갈랐다 어간 항목이 cls=verb 로 분류되는지."""
+        profile = json.loads(self.profile_path.read_text(encoding="utf-8"))
+        verb_items = [it for it in profile["items"] if it.get("cls") == "verb"]
+        self.assertTrue(len(verb_items) > 0, "verb cls 항목이 프로필에 없다")
+
+    def test_noun_cls_assigned(self):
+        """보존 같은 주제 명사가 cls=noun 으로 분류되는지."""
+        profile = json.loads(self.profile_path.read_text(encoding="utf-8"))
+        noun_items = [it for it in profile["items"] if it.get("cls") == "noun"]
+        self.assertTrue(len(noun_items) > 0, "noun cls 항목이 없다")
+        noun_keys = {it["key"] for it in noun_items}
+        self.assertIn("보존", noun_keys, "보존이 noun 으로 분류되지 않았다")
+
+    def test_noun_weighted_score_lower(self):
+        """같은 raw_score 라면 noun 의 weighted_score 가 verb 보다 낮은지."""
+        profile = json.loads(self.profile_path.read_text(encoding="utf-8"))
+        verb_items = [it for it in profile["items"] if it.get("cls") == "verb"]
+        noun_items = [it for it in profile["items"] if it.get("cls") == "noun"]
+        if not verb_items or not noun_items:
+            self.skipTest("verb 또는 noun 항목이 없어 가중치 비교 불가")
+        # 주제 명사 보존은 raw_score 가 높아도 weighted_score 는 ×0.3
+        best_noun = max(noun_items, key=lambda x: x["score"])
+        best_verb = max(verb_items, key=lambda x: x["weighted_score"])
+        # noun weighted_score = score × 0.3, verb × 1.0
+        self.assertAlmostEqual(
+            best_noun["weighted_score"],
+            best_noun["score"] * 0.3,
+            places=3,
+            msg="noun weighted_score 가 score×0.3 이 아니다",
+        )
+        self.assertAlmostEqual(
+            best_verb["weighted_score"],
+            best_verb["score"] * 1.0,
+            places=3,
+            msg="verb weighted_score 가 score×1.0 이 아니다",
+        )
+
+    def test_suggest_excludes_nouns_by_default(self):
+        """suggest 기본: noun cls 는 시드에 포함되지 않는지."""
+        out = self.td / "suggest_out.txt"
+        r = run_ar(["suggest", "--profile", str(self.profile_path), "--out", str(out)])
+        self.assertEqual(r.returncode, 0)
+        lines = {
+            ln.strip() for ln in out.read_text(encoding="utf-8").splitlines()
+            if ln.strip() and not ln.strip().startswith("#")
+        }
+        profile = json.loads(self.profile_path.read_text(encoding="utf-8"))
+        noun_keys = {it["key"] for it in profile["items"] if it.get("cls") == "noun"}
+        overlap = lines & noun_keys
+        self.assertEqual(overlap, set(), f"noun 키가 시드에 들어갔다: {overlap}")
+
+    def test_suggest_include_nouns_flag(self):
+        """--include-nouns 시 noun cls 도 시드에 들어가는지."""
+        out = self.td / "suggest_with_noun.txt"
+        r = run_ar(["suggest", "--profile", str(self.profile_path),
+                    "--out", str(out), "--include-nouns"])
+        self.assertEqual(r.returncode, 0)
+        lines = {
+            ln.strip() for ln in out.read_text(encoding="utf-8").splitlines()
+            if ln.strip() and not ln.strip().startswith("#")
+        }
+        profile = json.loads(self.profile_path.read_text(encoding="utf-8"))
+        noun_keys = {it["key"] for it in profile["items"] if it.get("cls") == "noun"}
+        # noun 항목이 적어도 하나는 포함돼야 함
+        if noun_keys:
+            self.assertTrue(
+                lines & noun_keys,
+                "--include-nouns 가 있어도 noun 키가 시드에 없다",
+            )
+
+    def test_scan_primary_before_noun(self):
+        """scan 텍스트 출력에서 verb/ngram 이 noun 보다 먼저 나오는지."""
+        # 타겟 문서: 갈랐다 4회, 보존 10회
+        target = self.td / "scan_target.md"
+        lines = []
+        for _ in range(10):
+            lines.append("보존 원칙을 지켜야 한다는 점에서 타당하다.\n\n")
+        for _ in range(4):
+            lines.append("이 시점에서 흐름이 완전히 갈랐다.\n\n")
+        target.write_text("".join(lines), encoding="utf-8")
+
+        r = run_ar([
+            "scan",
+            "--src", str(target),
+            "--profile", str(self.profile_path),
+            "--top", "20",
+        ])
+        self.assertEqual(r.returncode, 0)
+        output = r.stdout
+        # "주제어(참고)" 구분선이 있으면 그 앞에 verb 항목이 있어야 함
+        if "주제어(참고)" in output:
+            before_noun_section = output.split("주제어(참고)")[0]
+            self.assertIn("verb", before_noun_section,
+                          "주제어 구역 앞에 verb 항목이 없다")
+
+    def test_cls_field_in_scan_json(self):
+        """scan --json 의 findings 에 cls 필드가 있는지."""
+        target = self.td / "cls_scan.md"
+        target.write_text(_make_positive_doc(4), encoding="utf-8")
+        r = run_ar([
+            "scan", "--src", str(target),
+            "--profile", str(self.profile_path),
+            "--json",
+        ])
+        self.assertEqual(r.returncode, 0)
+        data = json.loads(r.stdout)
+        for f in data["findings"]:
+            self.assertIn("cls", f, "finding에 cls 필드가 없다")
+            self.assertIn(f["cls"], ("verb", "adv", "ngram", "noun"),
+                          f"유효하지 않은 cls: {f['cls']}")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
