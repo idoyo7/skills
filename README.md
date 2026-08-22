@@ -19,6 +19,16 @@ git clone git@github.com:idoyo7/skills.git ~/src/skills
 | `freeze/` | `/freeze` | 얼음! — 5시간 한도에 걸리면 handoff 를 남기고, 땡(리셋 시각)에 같은 세션을 헤드리스로 자동 재개하는 세션 예약 |
 | `jondae/` | `/jondae` | 어투를 존댓말로 맞추는 마무리 패스 (`안된다 → 안됩니다`). 종결어미만 바꾸고 구조·수치·코드는 바이트 보존, 검증은 스크립트가 강제 |
 
+## 수록 훅
+
+`install.sh`가 스킬 심링크에 이어 Stop 훅 설치와 `settings.json` 등록까지 처리한다.
+
+| 디렉터리 | 이벤트 | 설명 |
+|---|---|---|
+| `hooks/reply-check/` | Stop | 마지막 assistant 메시지의 한국어 산문을 세 축(무생물 주어·반복 구절·긴 문장)으로 검사, 기준 초과 시 재작성 요청 |
+
+훅 설치만 건너뛰려면 `install.sh --no-hooks`로 실행한다.
+
 ## 스킬 추가하기
 
 디렉토리 하나 만들고 `SKILL.md`에 frontmatter(`name`, `description`)를 채운 뒤 `install.sh`를 다시 돌린다.
