@@ -42,7 +42,11 @@ Claude Code 안에서 다음을 실행한다.
 bash tests/run.sh
 ```
 
-md_shield·llm_signature·heading_anchor 세 하네스가 순서대로 돌며 총 42개 테스트가 전부 통과해야 한다(`OK`가 세 번). 이 테스트는 humanize-korean 플러그인 없이도 통과한다 — LLM 호출 없이 마스킹·복원·지문 채점·앵커 재계산 로직만 검증하기 때문이다.
+md_shield·llm_signature·heading_anchor·author_repeat 네 하네스가 순서대로 돌며 전부 통과해야 한다(`OK`가 네 번). 이 테스트는 humanize-korean 플러그인 없이도 통과한다 — LLM 호출 없이 마스킹·복원·지문 채점·앵커 재계산·반복 구절 검출 로직만 검증하기 때문이다.
+
+v1.3에서 추가된 파일은 저장소 클론 시 함께 받아진다: `scripts/author_repeat.py`(반복 구절 검출), `references/author-tics.txt`(장르별 시드 목록), `references/author-repeat-stop.txt`(불용어 목록), `tests/test_author_repeat.py`(테스트 하네스). 별도 설치 단계는 없다.
+
+연동: `~/.claude/hooks/reply-check.py`가 `references/author-tics.txt`를 읽어 답변 단위 시드 검사를 수행한다.
 
 둘째, Claude Code 안에서의 스모크 테스트다. .md 파일 한두 개가 있는 디렉토리에서 "지문만 봐줘"라고 요청한다. 이 옵션은 윤문 없이 `llm_signature.py score`만 돌려 레이아웃 지문 등급을 보여주므로 LLM 콜이 들지 않는다. humanize-korean이 아직 없어도 이 요청 자체는 실행되지만, 실제 윤문을 요청하면 Phase 0에서 플러그인 미설치를 감지해 에러와 함께 설치 명령을 안내한다.
 
