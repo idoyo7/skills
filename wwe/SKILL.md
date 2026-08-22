@@ -207,6 +207,11 @@ if [ -f "$D/02_diagnosis.md" ] && grep -q "^# 진단 — " "$D/02_diagnosis.md";
 fi
 
 cp "$HD/references/docs-profile.md" "$D/02_diagnosis.md"
+# 작성자 반복 구절 지침 블록 — 시드 파일이 있을 때만 덧붙인다 (E: gen-block)
+AR_SEED="${HD}/references/author-tics.txt"
+if [ -f "$AR_SEED" ]; then
+  python3 "${HD}/scripts/author_repeat.py" gen-block --seed "$AR_SEED" >> "$D/02_diagnosis.md"
+fi
 python3 "$HD/scripts/llm_signature.py" score --src "{원본경로}" \
   >> "$D/02_diagnosis.md"          # 사람이 읽는 표가 진단문 뒤에 붙는다
 
@@ -420,6 +425,21 @@ fi
 # 사실 자체는 채택 승인이 아니다. 실제 채택 여부는 여전히 게이트 C(및 A·B·D)의 종료 코드가
 # 결정한다; candidate.path는 오직 "Phase 8이 무엇을 diff·적용해야 하는가"만 가리킨다.
 echo "$CANDIDATE" > "$D/candidate.path"
+
+# 게이트 C 옆 — 윤문 후 시드 잔존 검사 (exit 영향 없음, 보고 전용)
+AR_SEED="${HD}/references/author-tics.txt"
+if [ -f "$AR_SEED" ]; then
+  python3 "${HD}/scripts/author_repeat.py" scan     --src "$CANDIDATE" --seed "$AR_SEED" --json 2>/dev/null   | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+hits = [f for f in data.get('findings', []) if f.get('kind','').startswith('시드')]
+if hits:
+    lines = ['## 남은 시드']
+    for f in hits:
+        lines.append(f'- {f["key"]} ({f["count"]}회, 줄 {f["lines"][:3]})')
+    print('\n'.join(lines))
+" >> "$D/author_repeat_seed.txt" 2>/dev/null || true
+fi
 ```
 
 | 게이트 A exit | 판정 | 후속 |

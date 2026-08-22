@@ -93,6 +93,13 @@ _FUNC_ROOTS = frozenset({
     "때문", "경우", "대한", "통해", "위해", "따라",
 })
 
+# 종결어미 어간 — 어미를 벗긴 뒤 이 어간이 남으면 내용어가 아니므로 제외
+# (합쇼체·서술격 형식 표지: 합니다→합니, 됩니다→됩니, 습니다→습니 등)
+_ENDING_STEMS = frozenset({
+    "입니", "합니", "됩니", "아닙니", "습니", "십니",
+    "였습니", "했습니", "됩", "입", "합",
+})
+
 # cls 별 점수 가중치
 _CLS_WEIGHT: dict[str, float] = {
     "verb": 1.0,
@@ -215,6 +222,9 @@ def classify_stem(raw: str) -> tuple[str, str]:
             # 서술격 조사를 벗긴 경우 noun 으로 분류
             if ending in _COPULA_ENDINGS:
                 return stem, "noun"
+            # 조사 "에서/에게서/으로서/로서": 앞 글자가 조사 결합이면 동사 어미가 아니다
+            if ending in ("서", "서도") and stem.endswith(("에", "에게", "으로", "로")):
+                continue
             return stem, "verb"
 
     return after_particle, "noun"
@@ -270,6 +280,8 @@ def _tokenize_line(
             continue
         if _is_functional(stem):
             continue
+        if stem in _ENDING_STEMS:
+            continue
         result.append((stem, cls, raw, lineno))
     return result
 
@@ -305,7 +317,8 @@ def _build_ngrams_per_line(
             stem, cls = classify_stem(raw)
             valid = (len(stem) >= 2
                      and stem not in stopwords
-                     and not _is_functional(stem))
+                     and not _is_functional(stem)
+                     and stem not in _ENDING_STEMS)
             full_seq.append((stem, cls, raw, valid))
 
         # 1-gram: 유효한 토큰만
@@ -510,7 +523,7 @@ def cmd_build(args: argparse.Namespace) -> int:
                 if gram not in gram_example:
                     raw = doc["gram_raw_map"].get(gram, gram.split()[0])
                     ln = doc["gram_line_map"].get(gram, 0)
-                    gram_example[gram] = (ln, raw)
+                    gram_example[gram] = (str(path), ln, raw)  # A4: 파일 경로 포함
 
         doc_prose_lines[str(path)] = doc["prose_lines"]
 
@@ -518,11 +531,12 @@ def cmd_build(args: argparse.Namespace) -> int:
     for key, docs in gram_docs.items():
         df = len(docs)
         total = gram_total[key]
-        per_doc = total / n_docs
+        per_doc_all = total / n_docs            # 전체 문서 평균
+        per_doc_in_df = total / df              # 등장 문서 내 평균 (임계값 기준)
 
         if df < min_df:
             continue
-        if per_doc < 2.0:
+        if per_doc_in_df < 2.0:                 # A1: 등장 문서 내 평균 기준
             continue
 
         df_ratio = df / n_docs
@@ -531,21 +545,19 @@ def cmd_build(args: argparse.Namespace) -> int:
         weight = _CLS_WEIGHT.get(cls, 0.3)
         weighted_score = raw_score * weight
 
-        # 예시 문맥: 첫 등장 문서·줄에서 원문 단어 기반으로 찾음
+        # 예시 문맥: 파일 경로 정렬 후 첫 매치 문서의 첫 매치 줄 (A4: 결정적)
         example = ""
         ln_raw = gram_example.get(key)
         if ln_raw:
-            _, raw_word = ln_raw
-            # 해당 문서의 prose_lines 에서 raw_word 위치를 찾는다
-            for prose_lines in doc_prose_lines.values():
-                for _, text in prose_lines:
+            doc_path_str, lineno, raw_word = ln_raw
+            prose_lines = doc_prose_lines.get(doc_path_str, [])
+            for plineno, text in prose_lines:
+                if plineno == lineno:
                     idx = text.find(raw_word)
                     if idx >= 0:
                         start = max(0, idx - 20)
                         end = min(len(text), idx + len(raw_word) + 20)
                         example = text[start:end].strip()
-                        break
-                if example:
                     break
 
         items.append(
@@ -555,7 +567,8 @@ def cmd_build(args: argparse.Namespace) -> int:
                 "cls": cls,
                 "df": df,
                 "total": total,
-                "per_doc": round(per_doc, 3),
+                "per_doc_all": round(per_doc_all, 3),
+                "per_doc_in_df": round(per_doc_in_df, 3),
                 "score": round(raw_score, 4),
                 "weighted_score": round(weighted_score, 4),
                 "example": example,
@@ -615,16 +628,31 @@ def _detect_intra_doc(
 # ---------------------------------------------------------------------------
 
 
-def load_seed(path: Path | None = None) -> list[str]:
+def load_seed(path: Path | None = None) -> list[tuple[str, str]]:
+    """시드 파일을 읽어 (phrase, section_label) 쌍 목록을 반환한다.
+
+    ## 줄은 섹션 이름 — 첫 공백 전까지를 레이블로 쓴다 (예: '에세이', '기술').
+    # 줄은 주석. => 가 있으면 지시문을 포함한 원문도 phrase에서 제거한다.
+    """
     target = path or _DEFAULT_SEED_FILE
     if not target.exists():
         return []
-    items: list[str] = []
-    for line in target.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
+    items: list[tuple[str, str]] = []
+    current_section = ""
+    for raw_line in target.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or (line.startswith("#") and not line.startswith("##")):
             continue
-        items.append(line)
+        if line.startswith("##"):
+            # ## 에세이·분석문 → "에세이", ## 기술 게시글 → "기술"
+            section_text = line.lstrip("#").strip()
+            first_word = section_text.split()[0] if section_text.split() else ""
+            current_section = first_word.split("·")[0]
+            continue
+        # "표현 => 지시문" 형식이면 표현 부분만 추출
+        phrase = line.split("=>")[0].strip() if "=>" in line else line
+        if phrase:
+            items.append((phrase, current_section))
     return items
 
 
@@ -688,31 +716,32 @@ def cmd_scan(args: argparse.Namespace) -> int:
 
     # 2. 시드 매치 (원문 표현 직접 검색)
     seed_path = Path(args.seed) if getattr(args, "seed", None) else None
-    for seed_key in load_seed(seed_path):
-        if seed_key in seen:
+    for seed_phrase, seed_section in load_seed(seed_path):
+        if seed_phrase in seen:
             continue
+        kind = f"시드:{seed_section}" if seed_section else "시드"
         cnt = 0
         linenos_seed: list[int] = []
         example = ""
         for lineno, line in prose_lines:
-            if seed_key in line:
+            if seed_phrase in line:
                 cnt += 1
                 if len(linenos_seed) < 5:
                     linenos_seed.append(lineno)
                 if not example:
-                    idx = line.find(seed_key)
+                    idx = line.find(seed_phrase)
                     if idx >= 0:
                         start = max(0, idx - 20)
-                        end = min(len(line), idx + len(seed_key) + 20)
+                        end = min(len(line), idx + len(seed_phrase) + 20)
                         example = line[start:end].strip()
         if cnt == 0:
             continue
-        seen.add(seed_key)
+        seen.add(seed_phrase)
         per_1k = (cnt / total_tokens * 1000) if total_tokens else 0
-        _, seed_cls = classify_stem(seed_key.replace(" ", ""))
+        _, seed_cls = classify_stem(seed_phrase.replace(" ", ""))
         findings.append({
-            "key": seed_key, "n": len(seed_key.split()),
-            "cls": seed_cls, "kind": "시드",
+            "key": seed_phrase, "n": len(seed_phrase.split()),
+            "cls": seed_cls, "kind": kind,
             "count": cnt, "per_1k": round(per_1k, 2),
             "lines": linenos_seed, "example": example,
         })
@@ -793,6 +822,79 @@ def cmd_scan(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# gen-block 서브커맨드 — 시드 파일에서 humanize 지침 블록 생성
+# ---------------------------------------------------------------------------
+
+DEFAULT_TICS_INSTRUCTION = "평이한 말로 바꾼다"
+
+
+DEFAULT_TICS_INSTRUCTION = "평이한 말로 바꾼다"
+
+
+def generate_tics_block(seed_path=None):
+    """시드 파일에서 작성자 반복 구절 humanize 지침 블록을 생성한다.
+
+    시드 형식: 표현 => 대체 지시문  (=> 없으면 DEFAULT_TICS_INSTRUCTION)
+    ## 줄은 섹션 소제목, # 줄은 주석(보류 표현 메모).
+    """
+    target = seed_path or _DEFAULT_SEED_FILE
+    if not target.exists():
+        return ""
+
+    parts = []
+    header = (
+        "## 작성자 반복 구절 — 반드시 바꿀 것\n"
+        "아래 표현은 이 작성자가 습관처럼 되풀이하는 것이다. "
+        "나오면 뜻을 보존한 채 평이한 말로 바꾼다. "
+        "인용문·코드·고유명사 안은 건드리지 않는다. "
+        "(humanize-korean quick-rules 원문 보존 철칙에 따라 인용·코드는 그대로다.)"
+    )
+    parts.append(header)
+    for raw_line in target.read_text(encoding="utf-8").splitlines():
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("##"):
+            section_label = stripped.lstrip("#").strip()
+            parts.append("\n### " + section_label + "\n")
+            continue
+        if stripped.startswith("#"):
+            parts.append("<!-- " + stripped[1:].strip() + " -->")
+            continue
+        if "=>" in stripped:
+            phrase, instruction = stripped.split("=>", 1)
+            phrase = phrase.strip()
+            instruction = instruction.strip()
+        else:
+            phrase = stripped
+            instruction = DEFAULT_TICS_INSTRUCTION
+        parts.append("- " + phrase + " → " + instruction)
+    return "\n".join(parts) + "\n"
+
+
+def cmd_gen_block(args):
+    """gen-block: 시드 파일에서 humanize 지침 블록을 stdout 또는 파일에 출력."""
+    seed_path_arg = getattr(args, "seed", None)
+    seed_path = Path(seed_path_arg) if seed_path_arg else None
+    block = generate_tics_block(seed_path)
+    if not block:
+        print("(시드 파일 없음 또는 항목 없음)", file=sys.stderr)
+        return 0
+    out_arg = getattr(args, "out", None)
+    if out_arg:
+        out_path = Path(out_arg)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        if getattr(args, "append", False) and out_path.exists():
+            existing = out_path.read_text(encoding="utf-8")
+            block = existing + "\n" + block
+        out_path.write_text(block, encoding="utf-8")
+        print(f"블록 저장: {out_path}")
+    else:
+        print(block, end="")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # suggest 서브커맨드
 # ---------------------------------------------------------------------------
 
@@ -819,8 +921,11 @@ def cmd_suggest(args: argparse.Namespace) -> int:
         for line in out_path.read_text(encoding="utf-8").splitlines():
             existing_lines.append(line)
             stripped = line.strip()
-            if stripped and not stripped.startswith("#"):
-                existing_keys.add(stripped)
+            if stripped and not stripped.startswith("#") and not stripped.startswith("##"):
+                # => 가 있으면 표현 부분만
+                key_part = stripped.split("=>")[0].strip() if "=>" in stripped else stripped
+                if key_part:
+                    existing_keys.add(key_part)
 
     added: list[str] = []
     for key in new_keys:
@@ -866,6 +971,11 @@ def main(argv: list[str] | None = None) -> int:
     bp.add_argument("--out", required=True)
     bp.add_argument("--min-docs", type=int, default=3)
     bp.add_argument("--min-doc-ratio", type=float, default=0.3)
+
+    gbp = sub.add_parser("gen-block", help="시드 파일에서 humanize 지침 블록 생성")
+    gbp.add_argument("--seed", default=None, help=f"시드 파일 (기본: {_DEFAULT_SEED_FILE})")
+    gbp.add_argument("--out", default=None, help="출력 파일 (기본: stdout)")
+    gbp.add_argument("--append", action="store_true", help="기존 파일에 이어붙이기")
 
     sp = sub.add_parser("scan", help="새 문서 검사 (report 전용)")
     sp.add_argument("--src", required=True)
