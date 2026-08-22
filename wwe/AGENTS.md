@@ -4,7 +4,19 @@
 
 ## 이 저장소가 무엇인가
 
-humanize-docs는 실행 파일이 아니라 Claude Code가 읽는 스킬이다. `SKILL.md`에 파이프라인 지시문이, `scripts/`에 그 지시문이 호출하는 결정적 스크립트(마스킹·복원·지문 채점·앵커 재계산)가 들어 있다. 클론해서 올바른 경로에 두는 것만으로 설치가 끝나고, 별도 빌드나 실행 데몬은 없다.
+humanize-docs는 실행 파일이 아니라 Claude Code가 읽는 스킬이다. `SKILL.md`에 파이프라인 지시문이, `scripts/`에 그 지시문이 호출하는 결정적 스크립트(마스킹·복원·지문 채점·앵커 재계산·작성자 반복 구절 검출)가 들어 있다. 클론해서 올바른 경로에 두는 것만으로 설치가 끝나고, 별도 빌드나 실행 데몬은 없다.
+
+주요 파일:
+
+- `scripts/md_shield.py` — 마스킹·복원·구조 검증
+- `scripts/llm_signature.py` — 레이아웃 지문 스코어러(L1~L14)
+- `scripts/heading_anchor.py` — 헤딩 슬러그 재계산·앵커 치환·게이트 D
+- `scripts/scan_docs.py` — 문서 분류(한글 비율·산문량·route_hint)
+- `scripts/author_repeat.py` — 작성자 반복 구절 검출·gen-block 생성(v1.3)
+- `references/docs-profile.md` — 문서 전용 윤문 오버라이드
+- `references/author-tics.txt` — 장르별 반복 구절 시드 목록(v1.3)
+- `references/author-repeat-stop.txt` — 검출 시 걸러낼 불용어 목록(v1.3)
+- `tests/test_author_repeat.py` — 작성자 반복 구절 테스트 하네스(v1.3)
 
 ## 설치 절차
 
@@ -40,7 +52,7 @@ ls ~/.claude/plugins/cache/im-not-ai/humanize-korean/*/ 2>/dev/null
 bash tests/run.sh
 ```
 
-md_shield·llm_signature·heading_anchor 세 하네스가 순서대로 실행되며 총 42개 테스트가 통과해야 한다. 이 테스트는 humanize-korean 플러그인이 없어도 통과한다(LLM 호출 없이 스킬 자체 로직만 검증). 결과(통과/실패 개수, 실패가 있다면 어느 하네스인지)를 사용자에게 그대로 보고한다.
+md_shield·llm_signature·heading_anchor·author_repeat 네 하네스가 순서대로 실행되며 전부 통과해야 한다. 이 테스트는 humanize-korean 플러그인이 없어도 통과한다(LLM 호출 없이 스킬 자체 로직만 검증). 결과(통과/실패 개수, 실패가 있다면 어느 하네스인지)를 사용자에게 그대로 보고한다.
 
 ## 사용 시 알아야 할 것
 
