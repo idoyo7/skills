@@ -106,4 +106,41 @@ if [[ "${RC}" -eq 0 ]]; then
   RC="${HA_RC}"
 fi
 
+# ---------------------------------------------------------------------------
+# author_repeat.py (작성자 반복 구절 자동 검출) 회귀 테스트 — 위 블록은
+# 건드리지 않고 파일 끝에 추가 실행만 덧붙인다.
+# ---------------------------------------------------------------------------
+
+AR_HARNESS="${SCRIPT_DIR}/test_author_repeat.py"
+AR_SCRIPT="${SCRIPT_DIR}/../scripts/author_repeat.py"
+
+echo "=================================================================="
+echo "humanize-docs / author_repeat.py 테스트 러너"
+echo "  하네스 : ${AR_HARNESS}"
+echo "  대상   : ${AR_SCRIPT}"
+if [[ ! -f "${AR_SCRIPT}" ]]; then
+  echo "  상태   : author_repeat.py 없음 — 구현 대기 중 (테스트는 스킵으로 처리됨)"
+else
+  echo "  상태   : author_repeat.py 발견됨"
+fi
+echo "=================================================================="
+
+python3 "${AR_HARNESS}"
+AR_RC=$?
+
+echo "=================================================================="
+case "${AR_RC}" in
+  0)
+    echo "결과: 전체 통과 (exit ${AR_RC})"
+    ;;
+  *)
+    echo "결과: 실패/스킵 포함 (exit ${AR_RC}) — 위 unittest 출력에서 FAIL/ERROR/skipped 사유를 확인하세요."
+    ;;
+esac
+echo "=================================================================="
+
+if [[ "${RC}" -eq 0 ]]; then
+  RC="${AR_RC}"
+fi
+
 exit "${RC}"

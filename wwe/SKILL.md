@@ -207,6 +207,11 @@ if [ -f "$D/02_diagnosis.md" ] && grep -q "^# 진단 — " "$D/02_diagnosis.md";
 fi
 
 cp "$HD/references/docs-profile.md" "$D/02_diagnosis.md"
+# 작성자 반복 구절 지침 블록 — 시드 파일이 있을 때만 덧붙인다 (E: gen-block)
+AR_SEED="${HD}/references/author-tics.txt"
+if [ -f "$AR_SEED" ]; then
+  python3 "${HD}/scripts/author_repeat.py" gen-block --seed "$AR_SEED" >> "$D/02_diagnosis.md"
+fi
 python3 "$HD/scripts/llm_signature.py" score --src "{원본경로}" \
   >> "$D/02_diagnosis.md"          # 사람이 읽는 표가 진단문 뒤에 붙는다
 
@@ -420,6 +425,21 @@ fi
 # 사실 자체는 채택 승인이 아니다. 실제 채택 여부는 여전히 게이트 C(및 A·B·D)의 종료 코드가
 # 결정한다; candidate.path는 오직 "Phase 8이 무엇을 diff·적용해야 하는가"만 가리킨다.
 echo "$CANDIDATE" > "$D/candidate.path"
+
+# 게이트 C 옆 — 윤문 후 시드 잔존 검사 (exit 영향 없음, 보고 전용)
+AR_SEED="${HD}/references/author-tics.txt"
+if [ -f "$AR_SEED" ]; then
+  python3 "${HD}/scripts/author_repeat.py" scan     --src "$CANDIDATE" --seed "$AR_SEED" --json 2>/dev/null   | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+hits = [f for f in data.get('findings', []) if f.get('kind','').startswith('시드')]
+if hits:
+    lines = ['## 남은 시드']
+    for f in hits:
+        lines.append(f'- {f["key"]} ({f["count"]}회, 줄 {f["lines"][:3]})')
+    print('\n'.join(lines))
+" >> "$D/author_repeat_seed.txt" 2>/dev/null || true
+fi
 ```
 
 | 게이트 A exit | 판정 | 후속 |
@@ -581,3 +601,14 @@ Phase 0의 재개 감지(중단된 실행을 이어가는 것)와는 다르다 �
 - `references/docs-profile.md` — quick-rules 위에 얹는 문서 전용 오버라이드. 구조 파괴 룰 무효화 + L 계열 제거 지시 + 지문 재생산 금지. `--diagnosis`로 monolith 입력 앞머리에 주입된다
 - `tests/` — 적대적 코퍼스 16종(전 파일이 `test_md_shield.py`의 IDENTITY 구조 회귀 대상에 `*.md` glob으로 자동 편입된다. 그중 `15_condensable_example`/`16_example_sole_evidence` 2종은 추가로 축약 판단용 픽스처인데, 축약 자체는 LLM 판단이라 그 판단 품질만은 수동 검토 대상이다) + `run.sh`. 스크립트를 고쳤으면 반드시 돌린다
 - 상위 파이프라인: `humanize-korean` 플러그인 (`prepare_monolith_input.py`, `verify_gates.py`, `humanize-monolith`·`humanize-diagnostician`·`humanize-finalizer` 에이전트)
+
+## 작성자 반복 구절 (report 전용)
+
+`scripts/author_repeat.py` — 같은 작성자(Claude 등)가 쓴 문서 여러 개에 걸쳐 반복되는 표현을 코퍼스 교차 빈도로 검출한다. exit code 는 항상 0이고 결과는 보고만 한다. 금지어 목록 없이 "겹쳐 봐야 드러나는" 2차 워터마크를 잡는다.
+
+**운용 방법**
+
+- 프로필 갱신: `python3 scripts/author_repeat.py build --corpus <코퍼스 md들> --out _workspace/author-profile.json`
+- Phase 1 스캔 직후·게이트 C(Phase 7) 옆에서 스캔: `python3 scripts/author_repeat.py scan --src <대상md> --profile _workspace/author-profile.json --seed references/author-tics.txt --top 20 > {slug}/10_author_repeat.txt`
+- exit에는 기여하지 않는다. REPORT.md §걷어낸 레이아웃 지문 바로 뒤에 **작성자 반복 구절(상위 5개)** 항목을 한 줄 추가한다.
+- 알려진 반복구는 `references/author-tics.txt`에, 코퍼스 프로필은 `_workspace/author-profile.json`에 둔다.
