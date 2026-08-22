@@ -100,6 +100,24 @@ _ENDING_STEMS = frozenset({
     "였습니", "했습니", "됩", "입", "합",
 })
 
+# 약한 동사 어미 — 이 어미로 끝나면 어간 확인이 필요한 "verb_weak" 로 분류
+# 코퍼스/문서 내 강한 어미로 2회 이상 확인된 어간만 실제 verb 로 승격한다.
+_WEAK_VERB_ENDINGS_SET = frozenset({
+    "고", "지", "서", "며", "면", "도", "서도", "어도", "아도",
+})
+
+# 강한 동사 어미 — 이 어미로 끝나면 어간을 실제 동사로 확정한다.
+_STRONG_VERB_ENDINGS_SORTED = sorted([
+    "되었습니다", "하였습니다", "하였다", "되었다",
+    "됐습니다", "했습니다", "됐다", "했다",
+    "한다", "된다", "하는", "되는", "된", "한",
+    "였다",
+    "지만", "이지만",
+    "면서", "으면서",
+    "었다", "았다",
+    "다",
+], key=len, reverse=True)
+
 # cls 별 점수 가중치
 _CLS_WEIGHT: dict[str, float] = {
     "verb": 1.0,
@@ -225,6 +243,9 @@ def classify_stem(raw: str) -> tuple[str, str]:
             # 조사 "에서/에게서/으로서/로서": 앞 글자가 조사 결합이면 동사 어미가 아니다
             if ending in ("서", "서도") and stem.endswith(("에", "에게", "으로", "로")):
                 continue
+            # 약한 어미: 코퍼스/문서 내 어간 확인이 필요 — 호출자가 확정
+            if ending in _WEAK_VERB_ENDINGS_SET:
+                return stem, "verb_weak"
             return stem, "verb"
 
     return after_particle, "noun"
@@ -267,13 +288,46 @@ _EOJEOL_RE = re.compile(r"[가-힣]{2,}")
 _TokenInfo = tuple[str, str, str, int]
 
 
+def _collect_confirmed_verb_stems(
+    prose_lines: list[tuple[int, str]], min_count: int = 2
+) -> frozenset[str]:
+    """강한 활용 어미로 min_count 회 이상 등장한 어간을 반환한다.
+
+    build 단계에서는 코퍼스 전체, scan 단계에서는 문서 내 prose_lines 를 넘긴다.
+    반환된 집합에 있는 어간만 verb_weak → verb 로 승격한다.
+    """
+    stem_counts: dict[str, int] = defaultdict(int)
+    for _, line in prose_lines:
+        for raw in _EOJEOL_RE.findall(line):
+            after_particle = strip_particle(raw)
+            for ending in _STRONG_VERB_ENDINGS_SORTED:
+                if after_particle.endswith(ending) and len(after_particle) - len(ending) >= 1:
+                    stem = after_particle[: -len(ending)]
+                    stem_counts[stem] += 1
+                    break
+    return frozenset(s for s, c in stem_counts.items() if c >= min_count)
+
+
+def _resolve_weak(stem: str, raw: str, confirmed_stems: frozenset[str] | None) -> tuple[str, str]:
+    """verb_weak 어간을 confirmed_stems 에 따라 verb 또는 noun 으로 결정한다."""
+    if confirmed_stems is not None and stem in confirmed_stems:
+        return stem, "verb"
+    # 확인 안 됨: 어미 벗기기를 취소하고 원래 어절(조사 제거 후)을 noun 으로 반환
+    return strip_particle(raw), "noun"
+
+
 def _tokenize_line(
-    line: str, lineno: int, stopwords: set[str]
+    line: str,
+    lineno: int,
+    stopwords: set[str],
+    confirmed_stems: frozenset[str] | None = None,
 ) -> list[_TokenInfo]:
     """한 줄의 어절을 (stem, cls, raw_word, lineno) 목록으로 반환한다."""
     result: list[_TokenInfo] = []
     for raw in _EOJEOL_RE.findall(line):
         stem, cls = classify_stem(raw)
+        if cls == "verb_weak":
+            stem, cls = _resolve_weak(stem, raw, confirmed_stems)
         if len(stem) < 2:
             continue
         if stem in stopwords:
@@ -289,6 +343,7 @@ def _tokenize_line(
 def _build_ngrams_per_line(
     prose_lines: list[tuple[int, str]],
     stopwords: set[str],
+    confirmed_stems: frozenset[str] | None = None,
 ) -> tuple[
     list[tuple[str, str]],       # token_cls_pairs (전체 순서 유지)
     dict[int, list[str]],        # ngrams_by_n: {1:[...], 2:[...], 3:[...]}
@@ -315,6 +370,8 @@ def _build_ngrams_per_line(
         full_seq: list[tuple[str, str, str, bool]] = []
         for raw in all_raws:
             stem, cls = classify_stem(raw)
+            if cls == "verb_weak":
+                stem, cls = _resolve_weak(stem, raw, confirmed_stems)
             valid = (len(stem) >= 2
                      and stem not in stopwords
                      and not _is_functional(stem)
@@ -386,6 +443,7 @@ def _find_gram_occurrences(
     prose_lines: list[tuple[int, str]],
     stopwords: set[str],
     max_lines: int = 5,
+    confirmed_stems: frozenset[str] | None = None,
 ) -> tuple[list[int], str]:
     """gram 이 실제로 등장하는 줄 번호 목록과 첫 매치 예시 문맥을 반환한다.
 
@@ -399,7 +457,7 @@ def _find_gram_occurrences(
     example = ""
 
     for lineno, line in prose_lines:
-        line_tokens = _tokenize_line(line, lineno, stopwords)
+        line_tokens = _tokenize_line(line, lineno, stopwords, confirmed_stems)
         if len(line_tokens) < n:
             continue
 
@@ -430,7 +488,11 @@ def _find_gram_occurrences(
 # ---------------------------------------------------------------------------
 
 
-def parse_doc(path: Path, stopwords: set[str]) -> dict[str, Any]:
+def parse_doc(
+    path: Path,
+    stopwords: set[str],
+    confirmed_stems: frozenset[str] | None = None,
+) -> dict[str, Any]:
     """마크다운 파일 하나를 파싱해 토큰·ngram·cls·예시 정보를 반환한다."""
     try:
         text = path.read_text(encoding="utf-8")
@@ -453,7 +515,7 @@ def parse_doc(path: Path, stopwords: set[str]) -> dict[str, Any]:
         gram_cls_map,
         gram_raw_map,
         gram_line_map,
-    ) = _build_ngrams_per_line(prose_lines, stopwords)
+    ) = _build_ngrams_per_line(prose_lines, stopwords, confirmed_stems)
 
     tokens = [stem for stem, _ in token_cls_pairs]
     return {
@@ -498,6 +560,16 @@ def cmd_build(args: argparse.Namespace) -> int:
 
     min_df = max(args.min_docs, math.ceil(args.min_doc_ratio * n_docs))
 
+    # 1차 패스: 강한 활용 어미로 코퍼스 전체 확정 어간 수집
+    all_corpus_prose: list[tuple[int, str]] = []
+    for path in corpus_paths:
+        try:
+            text = path.read_text(encoding="utf-8")
+            all_corpus_prose.extend(_extract_prose_lines(text))
+        except Exception:
+            continue
+    global_confirmed_stems = _collect_confirmed_verb_stems(all_corpus_prose)
+
     gram_docs: dict[str, set[int]] = defaultdict(set)
     gram_total: dict[str, int] = defaultdict(int)
     gram_n_map: dict[str, int] = {}
@@ -506,7 +578,7 @@ def cmd_build(args: argparse.Namespace) -> int:
     doc_prose_lines: dict[str, list[tuple[int, str]]] = {}
 
     for doc_idx, path in enumerate(corpus_paths):
-        doc = parse_doc(path, stopwords)
+        doc = parse_doc(path, stopwords, global_confirmed_stems)
         if "error" in doc:
             print(f"경고: {path} 읽기 실패: {doc['error']}", file=sys.stderr)
             continue
@@ -678,13 +750,14 @@ def cmd_scan(args: argparse.Namespace) -> int:
         return 2
 
     prose_lines = _extract_prose_lines(text)
+    doc_confirmed_stems = _collect_confirmed_verb_stems(prose_lines)
     (
         token_cls_pairs,
         ngrams_by_n,
         gram_cls_map,
         gram_raw_map,
         gram_line_map,
-    ) = _build_ngrams_per_line(prose_lines, stopwords)
+    ) = _build_ngrams_per_line(prose_lines, stopwords, doc_confirmed_stems)
     total_tokens = len(token_cls_pairs)
 
     findings: list[dict[str, Any]] = []
@@ -705,7 +778,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
                 if cnt == 0 or key in seen:
                     continue
                 seen.add(key)
-                linenos, example = _find_gram_occurrences(key, prose_lines, stopwords)
+                linenos, example = _find_gram_occurrences(key, prose_lines, stopwords, confirmed_stems=doc_confirmed_stems)
                 per_1k = (cnt / total_tokens * 1000) if total_tokens else 0
                 cls = item.get("cls", gram_cls_map.get(key, "noun"))
                 findings.append({
@@ -739,6 +812,8 @@ def cmd_scan(args: argparse.Namespace) -> int:
         seen.add(seed_phrase)
         per_1k = (cnt / total_tokens * 1000) if total_tokens else 0
         _, seed_cls = classify_stem(seed_phrase.replace(" ", ""))
+        if seed_cls == "verb_weak":
+            seed_cls = "verb"  # 시드는 사용자가 명시적으로 등록한 표현 → verb 로 취급
         findings.append({
             "key": seed_phrase, "n": len(seed_phrase.split()),
             "cls": seed_cls, "kind": kind,
@@ -752,7 +827,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
         if key in seen:
             continue
         seen.add(key)
-        linenos, example = _find_gram_occurrences(key, prose_lines, stopwords)
+        linenos, example = _find_gram_occurrences(key, prose_lines, stopwords, confirmed_stems=doc_confirmed_stems)
         cls = gram_cls_map.get(key, "ngram" if item["n"] > 1 else "noun")
         findings.append({
             "key": key, "n": item["n"], "cls": cls, "kind": "문서내",
@@ -994,6 +1069,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "build":
         return cmd_build(args)
+    elif args.cmd == "gen-block":
+        return cmd_gen_block(args)
     elif args.cmd == "scan":
         return cmd_scan(args)
     elif args.cmd == "suggest":

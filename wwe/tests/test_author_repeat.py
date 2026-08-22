@@ -914,5 +914,74 @@ class TestNewFixes(unittest.TestCase):
         # 헤더 블록이 있어야 함
         self.assertIn("작성자 반복", block)
 
+@unittest.skipIf(_script_missing_reason(), _script_missing_reason() or "")
+class TestOvercuttingFix(unittest.TestCase):
+    """E5: 약한 어미 오절단 방지 — verb_weak 두 단계 확인."""
+
+    def _load_mod(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("ar", str(SCRIPT))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_page_word_stays_noun_without_confirmation(self):
+        """'페이지'는 코퍼스 확인 없이 noun으로 남는다."""
+        mod = self._load_mod()
+        lines = [(1, "페이지 보기")]
+        _, ngrams, cls_map, _, _ = mod._build_ngrams_per_line(
+            lines, set(), frozenset()
+        )
+        self.assertIn("페이지", ngrams[1], "'페이지'가 1-gram에 없음")
+        self.assertEqual(cls_map.get("페이지"), "noun", "'페이지'가 noun이 아님")
+
+    def test_conjunction_filtered_as_stopword(self):
+        """'그리고'는 약한 어미 미확인 → noun으로 fallback → 불용어로 제거된다."""
+        mod = self._load_mod()
+        stopwords = mod.load_stopwords()
+        # 그리고 → strip_particle → 그리고 (noun after weak fallback) → in stopwords
+        lines = [(1, "그리고 다음으로")]
+        _, ngrams, _, _, _ = mod._build_ngrams_per_line(
+            lines, stopwords, frozenset()
+        )
+        self.assertNotIn("그리", ngrams[1], "'그리'가 1-gram에 남아 있음")
+        self.assertNotIn("그리고", ngrams[1], "'그리고'가 1-gram에 남아 있음")
+
+    def test_confirmed_verb_stem_classified_as_verb(self):
+        """강한 어미로 2회 이상 등장한 어간은 약한 어미도 verb로 분류된다."""
+        mod = self._load_mod()
+        # "갈랐" = 2자 어간 (갈+랐). "갈랐다" → strong "다" → 어간 "갈랐"
+        # "갈랐고" → weak "고" → 어간 "갈랐" → confirmed → verb
+        lines = [
+            (1, "갈랐다"),   # strong "다" → stem "갈랐" count=1
+            (2, "갈랐다"),   # strong "다" → stem "갈랐" count=2
+            (3, "갈랐고"),   # weak "고" → verb_weak, confirmed → verb
+        ]
+        confirmed = mod._collect_confirmed_verb_stems(lines, min_count=2)
+        self.assertIn("갈랐", confirmed, "'갈랐'이 confirmed 집합에 없음")
+        _, ngrams, cls_map, _, _ = mod._build_ngrams_per_line(
+            lines, set(), confirmed
+        )
+        self.assertIn("갈랐", ngrams[1], "'갈랐'이 1-gram에 없음")
+        self.assertEqual(cls_map.get("갈랐"), "verb", "'갈랐'이 verb가 아님")
+
+
+class TestGenBlockCLI(unittest.TestCase):
+    """gen-block 서브커맨드 통합 테스트."""
+
+    def test_gen_block_outputs_tics_header(self):
+        """gen-block --seed 호출이 '## 작성자 반복 구절' 헤더를 stdout에 출력한다."""
+        seed = SKILL_DIR / "references" / "author-tics.txt"
+        if not seed.exists():
+            self.skipTest(f"시드 파일 없음: {seed}")
+        result = run_ar(["gen-block", "--seed", str(seed)])
+        self.assertEqual(result.returncode, 0, f"rc={result.returncode}\n{result.stderr}")
+        self.assertIn(
+            "## 작성자 반복 구절",
+            result.stdout,
+            f"헤더 없음. stdout 앞 300자:\n{result.stdout[:300]}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
