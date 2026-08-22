@@ -885,7 +885,7 @@ class TestNewFixes(unittest.TestCase):
         self.assertIn("따로 논다", block)
         self.assertIn("평이한 말로", block)  # default instruction
         # 주석(보류)은 HTML 코멘트로
-        self.assertIn("<!--", block)
+        self.assertNotIn("<!--", block)  # 파일 머리 주석은 지침에 섞지 않는다
         self.assertIn("보류", block)
         # 섹션 헤더는 소제목으로
         self.assertIn("에세이", block)

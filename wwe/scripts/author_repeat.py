@@ -933,8 +933,7 @@ def generate_tics_block(seed_path=None):
             section_label = stripped.lstrip("#").strip()
             parts.append("\n### " + section_label + "\n")
             continue
-        if stripped.startswith("#"):
-            parts.append("<!-- " + stripped[1:].strip() + " -->")
+        if stripped.startswith("#") and not stripped.startswith("##"):
             continue
         if "=>" in stripped:
             phrase, instruction = stripped.split("=>", 1)
