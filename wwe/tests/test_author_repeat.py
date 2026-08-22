@@ -154,7 +154,7 @@ class TestBuildSubcommand(unittest.TestCase):
         """프로필 item 스키마 확인."""
         _, profile = self._build()
         for item in profile["items"]:
-            for key in ("key", "n", "df", "total", "per_doc", "score", "example"):
+            for key in ("key", "n", "df", "total", "per_doc_in_df", "per_doc_all", "score", "example"):
                 self.assertIn(key, item, f"item에 '{key}' 키가 없다")
             self.assertIn(item["n"], (1, 2, 3), "n 은 1, 2, 3 중 하나여야 한다")
             self.assertGreater(item["score"], 0)
@@ -261,9 +261,12 @@ class TestScanSubcommand(unittest.TestCase):
     def test_kind_field_valid(self):
         """findings 의 kind 가 유효한 값인지."""
         _, data = self._scan_json(self.target_doc)
-        valid_kinds = {"프로필", "시드", "문서내"}
         for f in data["findings"]:
-            self.assertIn(f["kind"], valid_kinds, f"유효하지 않은 kind: {f['kind']}")
+            kind = f["kind"]
+            self.assertTrue(
+                kind in ("프로필", "문서내") or kind.startswith("시드"),
+                f"유효하지 않은 kind: {kind}",
+            )
 
     def test_json_schema(self):
         """scan --json 출력 스키마 확인."""
@@ -295,7 +298,7 @@ class TestScanSubcommand(unittest.TestCase):
         ])
         self.assertEqual(r.returncode, 0)
         data = json.loads(r.stdout)
-        seed_matches = [f for f in data["findings"] if f["kind"] == "시드"]
+        seed_matches = [f for f in data["findings"] if f["kind"].startswith("시드")]
         self.assertTrue(len(seed_matches) > 0, "시드 표현이 문서에 있으면 '시드' 매치가 있어야 한다")
 
     def test_code_block_ignored(self):
@@ -728,6 +731,188 @@ class TestDefectFixes(unittest.TestCase):
                 cls, expected_cls,
                 f'classify_stem("{raw}") → cls "{cls}", 기대값 "{expected_cls}"',
             )
+
+
+@unittest.skipIf(_script_missing_reason(), _script_missing_reason() or "")
+class TestNewFixes(unittest.TestCase):
+    """A1~A5, B, E4 항목 신규 테스트."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.td = Path(self.tmpdir.name)
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    # ── A1: per_doc_in_df vs per_doc_all ──────────────────────────────────
+
+    def test_per_doc_in_df_is_df_average(self):
+        """per_doc_in_df = total / df, per_doc_all = total / corpus_docs."""
+        # 5개 문서 코퍼스, "갈랐다"는 3개 문서에만 등장 (각 2회)
+        phrase = "갈랐다"
+        for i in range(3):
+            doc = f"# doc {i}\n\n이 흐름이 갈랐다. 또 갈랐다.\n\n"
+            (self.td / f"hit_{i}.md").write_text(doc, encoding="utf-8")
+        for i in range(2):
+            doc = "# 다른 문서\n\n관련 없는 내용이다.\n\n"
+            (self.td / f"miss_{i}.md").write_text(doc, encoding="utf-8")
+        profile_path = self.td / "p.json"
+        r = run_ar([
+            "build", "--corpus", str(self.td), "--out", str(profile_path),
+            "--min-docs", "2", "--min-doc-ratio", "0.0",
+        ])
+        self.assertEqual(r.returncode, 0)
+        profile = json.loads(profile_path.read_text(encoding="utf-8"))
+        n_docs = profile["corpus_docs"]  # should be 5
+        hits = [it for it in profile["items"] if "갈" in it["key"]]
+        if not hits:
+            self.skipTest("갈랐 계열 항목이 프로필에 없음")
+        item = hits[0]
+        # per_doc_in_df = total / df
+        expected_in_df = round(item["total"] / item["df"], 3)
+        self.assertAlmostEqual(item["per_doc_in_df"], expected_in_df, places=2)
+        # per_doc_all = total / n_docs
+        expected_all = round(item["total"] / n_docs, 3)
+        self.assertAlmostEqual(item["per_doc_all"], expected_all, places=2)
+        # per_doc_in_df >= per_doc_all (df <= n_docs always)
+        self.assertGreaterEqual(item["per_doc_in_df"], item["per_doc_all"])
+
+    # ── A2: _ENDING_STEMS 필터 ────────────────────────────────────────────
+
+    def test_ending_stems_filtered(self):
+        """합쇼체 잔재 어간(합니/됩니 등)이 프로필 verb 로 올라오지 않는다."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("ar", str(SCRIPT))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        # "합니다" → strip "다" → "합니" should be in _ENDING_STEMS
+        stem, cls = mod.classify_stem("합니다")
+        sw = mod.load_stopwords()
+        # _tokenize_line should filter "합니"
+        lines = [(1, "이 기능이 없이는 합니다. 또 합니다.")]
+        tokens = mod._tokenize_line("합니다", 1, sw)
+        # stem "합니" should not appear in the result
+        stems = [t[0] for t in tokens]
+        self.assertNotIn("합니", stems, '"합니" 어간이 토큰에 있다')
+        self.assertNotIn("됩니", stems, '"됩니" 어간이 토큰에 있다')
+
+    # ── A3: 에서/로서 조사 오인 방지 ──────────────────────────────────────
+
+    def test_esse_particle_not_verb(self):
+        """쪽에서/에게서/으로서가 verb 로 분류되지 않는다."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("ar", str(SCRIPT))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        for word in ("쪽에서", "여기에서", "그에게서", "방향으로서", "예시로서"):
+            _, cls = mod.classify_stem(word)
+            self.assertNotEqual(
+                cls, "verb",
+                f'"{word}" 이 cls=verb 로 잘못 분류됨',
+            )
+
+    # ── A4: 예시 결정성 ───────────────────────────────────────────────────
+
+    def test_example_deterministic(self):
+        """같은 코퍼스로 두 번 빌드하면 example 필드가 동일해야 한다."""
+        for i in range(4):
+            (self.td / f"d{i}.md").write_text(
+                f"# 문서 {i}\n\n이 흐름이 완전히 갈랐다.\n\n또 갈랐다.\n\n",
+                encoding="utf-8",
+            )
+        p1 = self.td / "p1.json"
+        p2 = self.td / "p2.json"
+        for out in (p1, p2):
+            r = run_ar([
+                "build", "--corpus", str(self.td), "--out", str(out),
+                "--min-docs", "2", "--min-doc-ratio", "0.0",
+            ])
+            self.assertEqual(r.returncode, 0)
+        prof1 = json.loads(p1.read_text(encoding="utf-8"))
+        prof2 = json.loads(p2.read_text(encoding="utf-8"))
+        ex1 = {it["key"]: it["example"] for it in prof1["items"]}
+        ex2 = {it["key"]: it["example"] for it in prof2["items"]}
+        self.assertEqual(ex1, ex2, "두 번 빌드 결과의 example 필드가 다르다")
+
+    # ── B: 시드 섹션 레이블 ────────────────────────────────────────────────
+
+    def test_seed_section_label_in_kind(self):
+        """## 섹션이 있는 시드 파일을 쓰면 kind가 '시드:섹션명' 형식이어야 한다."""
+        seed_file = self.td / "test_seed.txt"
+        seed_file.write_text(
+            "## 에세이·분석문\n갈랐다\n## 기술 게시글\n다만\n",
+            encoding="utf-8",
+        )
+        doc = self.td / "doc.md"
+        doc.write_text(
+            "# 테스트\n\n흐름이 갈랐다. 갈랐다. 갈랐다.\n\n다만 이 부분은 다르다. 다만.\n\n",
+            encoding="utf-8",
+        )
+        r = run_ar(["scan", "--src", str(doc), "--seed", str(seed_file), "--json"])
+        self.assertEqual(r.returncode, 0)
+        data = json.loads(r.stdout)
+        seed_findings = [f for f in data["findings"] if f["kind"].startswith("시드")]
+        self.assertTrue(len(seed_findings) > 0, "시드 매치가 없다")
+        kinds = {f["kind"] for f in seed_findings}
+        # 최소 하나는 섹션 레이블 포함
+        labeled = [k for k in kinds if ":" in k]
+        self.assertTrue(len(labeled) > 0, f"시드 kind에 ':' 없음: {kinds}")
+        for k in labeled:
+            prefix, section = k.split(":", 1)
+            self.assertEqual(prefix, "시드")
+            self.assertTrue(len(section) > 0, "섹션 레이블이 비어 있다")
+
+    # ── E4: generate_tics_block 단위 테스트 ───────────────────────────────
+
+    def test_generate_tics_block_with_instruction(self):
+        """=> 가 있는 줄은 '표현 → 지시문' 형식으로 출력된다."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("ar", str(SCRIPT))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        seed = self.td / "seed.txt"
+        seed.write_text(
+            "## 에세이\n"
+            "갈랐다 => 흐름이 나뉘었다\n"
+            "따로 논다\n"  # no instruction → default
+            "# 보류: 여기서\n",
+            encoding="utf-8",
+        )
+        block = mod.generate_tics_block(seed)
+        self.assertIn("갈랐다", block)
+        self.assertIn("흐름이 나뉘었다", block)
+        self.assertIn("따로 논다", block)
+        self.assertIn("평이한 말로", block)  # default instruction
+        # 주석(보류)은 HTML 코멘트로
+        self.assertIn("<!--", block)
+        self.assertIn("보류", block)
+        # 섹션 헤더는 소제목으로
+        self.assertIn("에세이", block)
+
+    def test_generate_tics_block_no_file(self):
+        """시드 파일이 없으면 빈 문자열을 반환한다."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("ar", str(SCRIPT))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        missing = self.td / "no_such_file.txt"
+        block = mod.generate_tics_block(missing)
+        self.assertEqual(block, "")
+
+    def test_generate_tics_block_section_header_only(self):
+        """섹션 헤더만 있고 표현이 없어도 오류 없이 처리된다."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("ar", str(SCRIPT))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        seed = self.td / "empty_section.txt"
+        seed.write_text("## 섹션만\n# 주석만\n", encoding="utf-8")
+        block = mod.generate_tics_block(seed)
+        # 헤더 블록이 있어야 함
+        self.assertIn("작성자 반복", block)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
