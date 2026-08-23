@@ -763,7 +763,42 @@ def cmd_scan(args: argparse.Namespace) -> int:
     findings: list[dict[str, Any]] = []
     seen: set[str] = set()
 
-    # 1. 프로필 매치
+    # 1. 시드 매치 (원문 표현 직접 검색) — 사용자가 명시 등록한 표현이므로 프로필보다 우선한다
+    seed_path = Path(args.seed) if getattr(args, "seed", None) else None
+    for seed_phrase, seed_section in load_seed(seed_path):
+        if seed_phrase in seen:
+            continue
+        kind = f"시드:{seed_section}" if seed_section else "시드"
+        cnt = 0
+        linenos_seed: list[int] = []
+        example = ""
+        for lineno, line in prose_lines:
+            occurrences = line.count(seed_phrase)
+            if occurrences:
+                cnt += occurrences
+                if len(linenos_seed) < 5:
+                    linenos_seed.append(lineno)
+                if not example:
+                    idx = line.find(seed_phrase)
+                    if idx >= 0:
+                        start = max(0, idx - 20)
+                        end = min(len(line), idx + len(seed_phrase) + 20)
+                        example = line[start:end].strip()
+        if cnt == 0:
+            continue
+        seen.add(seed_phrase)
+        per_1k = (cnt / total_tokens * 1000) if total_tokens else 0
+        _, seed_cls = classify_stem(seed_phrase.replace(" ", ""))
+        if seed_cls == "verb_weak":
+            seed_cls = "verb"  # 시드는 사용자가 명시적으로 등록한 표현 → verb 로 취급
+        findings.append({
+            "key": seed_phrase, "n": len(seed_phrase.split()),
+            "cls": seed_cls, "kind": kind,
+            "count": cnt, "per_1k": round(per_1k, 2),
+            "lines": linenos_seed, "example": example,
+        })
+
+    # 2. 프로필 매치
     if getattr(args, "profile", None):
         profile_path = Path(args.profile)
         if profile_path.exists():
@@ -787,40 +822,6 @@ def cmd_scan(args: argparse.Namespace) -> int:
                     "lines": linenos, "example": example,
                 })
 
-    # 2. 시드 매치 (원문 표현 직접 검색)
-    seed_path = Path(args.seed) if getattr(args, "seed", None) else None
-    for seed_phrase, seed_section in load_seed(seed_path):
-        if seed_phrase in seen:
-            continue
-        kind = f"시드:{seed_section}" if seed_section else "시드"
-        cnt = 0
-        linenos_seed: list[int] = []
-        example = ""
-        for lineno, line in prose_lines:
-            if seed_phrase in line:
-                cnt += 1
-                if len(linenos_seed) < 5:
-                    linenos_seed.append(lineno)
-                if not example:
-                    idx = line.find(seed_phrase)
-                    if idx >= 0:
-                        start = max(0, idx - 20)
-                        end = min(len(line), idx + len(seed_phrase) + 20)
-                        example = line[start:end].strip()
-        if cnt == 0:
-            continue
-        seen.add(seed_phrase)
-        per_1k = (cnt / total_tokens * 1000) if total_tokens else 0
-        _, seed_cls = classify_stem(seed_phrase.replace(" ", ""))
-        if seed_cls == "verb_weak":
-            seed_cls = "verb"  # 시드는 사용자가 명시적으로 등록한 표현 → verb 로 취급
-        findings.append({
-            "key": seed_phrase, "n": len(seed_phrase.split()),
-            "cls": seed_cls, "kind": kind,
-            "count": cnt, "per_1k": round(per_1k, 2),
-            "lines": linenos_seed, "example": example,
-        })
-
     # 3. 문서 내 반복
     for item in _detect_intra_doc(ngrams_by_n, total_tokens):
         key = item["key"]
@@ -835,12 +836,17 @@ def cmd_scan(args: argparse.Namespace) -> int:
             "lines": linenos, "example": example,
         })
 
-    # 정렬: primary cls 먼저, 같은 그룹 내 count 내림차순
+    # 정렬: 시드(사용자 등록 표현) → primary cls(verb/adv/ngram) → 나머지(noun) 순
+    # 같은 그룹 내에서는 count 내림차순. 시드 항목은 --top 절단 대상에서 제외하고 항상 포함한다.
     def sort_key(f: dict[str, Any]) -> tuple[int, int]:
         return (0 if f.get("cls", "noun") in _PRIMARY_CLS else 1, -f["count"])
 
+    seed_findings = [f for f in findings if f["kind"].startswith("시드")]
+    non_seed_findings = [f for f in findings if not f["kind"].startswith("시드")]
+    seed_findings_sorted = sorted(seed_findings, key=lambda f: -f["count"])
+
     top_n = getattr(args, "top", 20)
-    findings_sorted = sorted(findings, key=sort_key)[:top_n]
+    findings_sorted = seed_findings_sorted + sorted(non_seed_findings, key=sort_key)[:top_n]
 
     if args.json:
         print(json.dumps({
@@ -850,9 +856,10 @@ def cmd_scan(args: argparse.Namespace) -> int:
         }, ensure_ascii=False, indent=2))
         return 0
 
-    # 텍스트 출력
-    primary_f = [f for f in findings_sorted if f.get("cls", "noun") in _PRIMARY_CLS]
-    noun_f    = [f for f in findings_sorted if f.get("cls", "noun") not in _PRIMARY_CLS]
+    # 텍스트 출력 — 시드(등록 표현, 1급) → primary cls(비시드) → noun(비시드) 순으로 세 표
+    seed_f    = [f for f in findings_sorted if f["kind"].startswith("시드")]
+    primary_f = [f for f in findings_sorted if not f["kind"].startswith("시드") and f.get("cls", "noun") in _PRIMARY_CLS]
+    noun_f    = [f for f in findings_sorted if not f["kind"].startswith("시드") and f.get("cls", "noun") not in _PRIMARY_CLS]
 
     def _print_table(rows_data: list[dict[str, Any]]) -> None:
         if not rows_data:
@@ -883,7 +890,12 @@ def cmd_scan(args: argparse.Namespace) -> int:
         print("(반복 구절 없음)")
         return 0
 
+    if seed_f:
+        print("--- 시드(등록 표현) ---")
+        _print_table(seed_f)
     if primary_f:
+        if seed_f:
+            print()
         _print_table(primary_f)
     if noun_f:
         print("\n--- 주제어(참고) — noun cls, 가중치 ×0.3 ---")

@@ -301,6 +301,118 @@ class TestScanSubcommand(unittest.TestCase):
         seed_matches = [f for f in data["findings"] if f["kind"].startswith("시드")]
         self.assertTrue(len(seed_matches) > 0, "시드 표현이 문서에 있으면 '시드' 매치가 있어야 한다")
 
+    def test_seed_survives_top_cutoff(self):
+        """--top 값을 아주 작게 줘도 시드 finding은 잘리지 않고 남아야 한다."""
+        seed_file = self.td / "cutoff_seed.txt"
+        seed_file.write_text("동시에\n", encoding="utf-8")
+        doc = self.td / "cutoff_doc.md"
+        doc.write_text(
+            _make_positive_doc(4) + "\n\n이 부분은 동시에 발생했다.\n\n",
+            encoding="utf-8",
+        )
+        r = run_ar([
+            "scan",
+            "--src", str(doc),
+            "--profile", str(self.profile_path),
+            "--seed", str(seed_file),
+            "--top", "1",
+            "--json",
+        ])
+        self.assertEqual(r.returncode, 0, f"scan 실패:\n{r.stderr}")
+        data = json.loads(r.stdout)
+        seed_matches = [f for f in data["findings"] if f["kind"].startswith("시드")]
+        self.assertTrue(len(seed_matches) > 0, "--top 1 이어도 시드 finding이 잘리지 않고 남아야 한다")
+
+    def test_seed_overrides_profile_kind(self):
+        """프로필 항목과 같은 키가 시드에도 있으면 kind가 '시드'로 시작해야 한다."""
+        custom_profile = self.td / "custom_profile.json"
+        custom_profile.write_text(json.dumps({
+            "built_at": "2026-01-01T00:00:00",
+            "corpus_docs": 5,
+            "items": [
+                {"key": "정확히", "n": 1, "df": 3, "total": 5,
+                 "per_doc_in_df": 1.6, "per_doc_all": 1.0,
+                 "score": 1.0, "example": "정확히", "cls": "noun"},
+            ],
+        }), encoding="utf-8")
+
+        seed_file = self.td / "overlap_seed.txt"
+        seed_file.write_text("## 에세이\n정확히\n", encoding="utf-8")
+
+        doc = self.td / "overlap_doc.md"
+        doc.write_text(
+            "# 테스트\n\n정확히 그렇다. 정확히 맞다. 정확히 확인했다.\n\n",
+            encoding="utf-8",
+        )
+        r = run_ar([
+            "scan",
+            "--src", str(doc),
+            "--profile", str(custom_profile),
+            "--seed", str(seed_file),
+            "--json",
+        ])
+        self.assertEqual(r.returncode, 0, f"scan 실패:\n{r.stderr}")
+        data = json.loads(r.stdout)
+        matches = [f for f in data["findings"] if f["key"] == "정확히"]
+        self.assertEqual(len(matches), 1, "같은 키가 중복 보고되면 안 된다")
+        self.assertTrue(
+            matches[0]["kind"].startswith("시드"),
+            f"프로필과 겹치는 시드는 kind가 '시드'로 시작해야 한다: {matches[0]['kind']}",
+        )
+
+    def test_seed_count_counts_multiple_occurrences_per_line(self):
+        """한 줄에 시드 표현이 두 번 나오면 count가 2여야 한다(줄 단위 카운트 금지)."""
+        seed_file = self.td / "twice_seed.txt"
+        seed_file.write_text("동시에\n", encoding="utf-8")
+        doc = self.td / "twice_doc.md"
+        doc.write_text(
+            "# 테스트\n\n동시에 일어난 일이 동시에 종료됐다.\n\n",
+            encoding="utf-8",
+        )
+        r = run_ar([
+            "scan",
+            "--src", str(doc),
+            "--seed", str(seed_file),
+            "--json",
+        ])
+        self.assertEqual(r.returncode, 0, f"scan 실패:\n{r.stderr}")
+        data = json.loads(r.stdout)
+        seed_matches = [f for f in data["findings"] if f["key"] == "동시에"]
+        self.assertEqual(len(seed_matches), 1)
+        self.assertEqual(
+            seed_matches[0]["count"], 2,
+            "한 줄에 시드 표현이 2번 나오면 count도 2여야 한다",
+        )
+
+    def test_seed_noun_cls_appears_before_noun_section(self):
+        """noun cls로 분류된 시드(예: '한눈에')는 '주제어(참고)' 표가 아니라 별도 시드 표에,
+        그 표보다 앞에 나와야 한다."""
+        seed_file = self.td / "noun_seed.txt"
+        seed_file.write_text("한눈에\n", encoding="utf-8")
+
+        lines = []
+        for _ in range(10):
+            lines.append("보존 원칙을 지켜야 한다는 점에서 타당하다.\n\n")
+        lines.append("이 표는 한눈에 들어온다. 한눈에 파악된다. 한눈에 보인다.\n\n")
+        doc = self.td / "seed_noun_scan.md"
+        doc.write_text("".join(lines), encoding="utf-8")
+
+        r = run_ar([
+            "scan",
+            "--src", str(doc),
+            "--seed", str(seed_file),
+            "--profile", str(self.profile_path),
+        ])
+        self.assertEqual(r.returncode, 0, f"scan 실패:\n{r.stderr}")
+        output = r.stdout
+        self.assertIn("시드(등록 표현)", output, "시드 표 헤딩이 출력되어야 한다")
+        self.assertIn("주제어(참고)", output, "노운 항목이 있어야 주제어 표가 뜬다(테스트 전제 확인용)")
+        seed_idx = output.index("시드(등록 표현)")
+        noun_idx = output.index("주제어(참고)")
+        self.assertLess(seed_idx, noun_idx, "시드 표가 '주제어(참고)' 표보다 앞에 나와야 한다")
+        seed_section = output[seed_idx:noun_idx]
+        self.assertIn("한눈에", seed_section, "noun cls 시드 '한눈에'가 시드 표 안에 있어야 한다")
+
     def test_code_block_ignored(self):
         """코드블록 안의 반복은 무시되어야 한다."""
         code_doc = self.td / "code_test.md"
