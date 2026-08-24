@@ -166,13 +166,17 @@ _RE_INANI = re.compile(
     # (b) 추상 명사 주어(이/가/은/는) + 목적어 + 추상 타동사
     r"|[가-힣]+(?:이|가|은|는)\s+(?:[가-힣]+\s+){0,3}[가-힣]+(?:을|를)\s+"
     r"(?:정했|결정했|결정한|만들었|만드는|만든다|가져왔|가져다|바꿨|바꾸었|이끌었|낳았|낳는|좌우했|좌우한|보여줬|보여준|말해준|말해줬|드러냈|드러낸|증명했|증명한|입증했|가른|갈랐|결정짓)"
-    # (c) 무생물 주어 사동: "X이/가/은/는 ... ~하게 만들다" (have/make 번역투)
-    r"|[가-힣]+(?:이|가|은|는)\s+(?:[가-힣]+\s+){0,4}[가-힣]+게\s+만들(?:다|었|어|고|며|기|\s?뿐)?"
+)
+
+# (c) 무생물 주어 사동: "X이/가/은/는 ... ~하게 만들다" (have/make 번역투).
+#     명백한 직역이라 습관 임계(2회) 없이 1회부터 차단 사유로 본다.
+_RE_CAUSATIVE = re.compile(
+    r"[가-힣]+(?:이|가|은|는)\s+(?:[가-힣]+\s+){0,4}[가-힣]+게\s+만들(?:다|었|어|고|며|기|\s?뿐)?"
 )
 
 
-def _check_axis1(text: str) -> tuple[float | None, int, list[str]]:
-    """(metrics_v2 rate or None, regex_hit_count, example_sentences)."""
+def _check_axis1(text: str) -> tuple[float | None, int, list[str], list[str]]:
+    """(metrics_v2 rate or None, regex_hit_count, examples, causative_examples)."""
     rate: float | None = None
     if _METRICS_V2_PATH.exists():
         try:
@@ -185,7 +189,8 @@ def _check_axis1(text: str) -> tuple[float | None, int, list[str]]:
             _err(f"metrics_v2 load failed: {exc}")
 
     matches = _RE_INANI.findall(text)
-    return rate, len(matches), matches
+    caus = _RE_CAUSATIVE.findall(text)
+    return rate, len(matches), matches, caus
 
 
 # ---------------------------------------------------------------------------
@@ -474,7 +479,7 @@ def main() -> None:
         sys.exit(0)
 
     # ── axis 1 ──────────────────────────────────────────────────────────────
-    a1_rate, a1_regex_hits, a1_examples = _check_axis1(cleaned)
+    a1_rate, a1_regex_hits, a1_examples, a1_causative = _check_axis1(cleaned)
     log_rec["inanimate_rate"] = a1_rate
 
     a1_fail = False
@@ -486,6 +491,10 @@ def main() -> None:
         a1_fail = True
         for ex in a1_examples[:2]:
             a1_reason_lines.append(f'- 무생물 주어: "{ex[:60]}"')
+    if a1_causative:
+        a1_fail = True
+        for ex in a1_causative[:2]:
+            a1_reason_lines.append(f'- 사동 번역투(~하게 만들다): "{ex[:60]}"')
 
     # ── axis 2 ──────────────────────────────────────────────────────────────
     a2_seed_hits, a2_top_stem, a2_top_count = _check_axis2(cleaned)
