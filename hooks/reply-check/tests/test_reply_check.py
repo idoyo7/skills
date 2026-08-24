@@ -234,5 +234,20 @@ class TestReplyCheck(unittest.TestCase):
         self.assertGreater(pct, 0.0)
 
 
+
+
+class TestCausativeInanimate(unittest.TestCase):
+    """무생물 주어 사동(~하게 만들다)과 은/는 주어 확장 회귀."""
+
+    def test_causative_and_topic_subject(self):
+        hits = _mod._RE_INANI.findall("가격은 검토를 시작하게 만들 뿐입니다.")
+        self.assertTrue(hits)
+
+    def test_human_subject_not_flagged(self):
+        self.assertFalse(_mod._RE_INANI.findall("저는 아침에 커피를 마셨다."))
+        self.assertFalse(_mod._RE_INANI.findall("사용자가 버튼을 눌렀다."))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
