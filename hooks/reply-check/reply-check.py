@@ -212,6 +212,7 @@ _DEFAULT_SEEDS: list[str] = [
     # 작성자(Claude) 고유 반복구 — author-tics.txt가 없을 때의 폴백
     "갈랐다", "따로 논다", "뿌리가 된", "거칠다", "못박았다", "못박아뒀다",
     "손은 내가 댔다", "하는 자리다", "한눈에", "모양새", "셈이다", "그 지점",
+    "질문을 던지", "물음을 던지",
 ]
 
 # 용언 어간 추출을 위한 정규식
@@ -317,6 +318,8 @@ _RE_IT_CLEFT = re.compile(
 # 4-block-4: 한계 프레임 (~하나로는/만으로는 ... 안/않/못/부족...)
 _RE_LIMIT_FRAME = re.compile(
     r"(?:하나로는|만으로는|만으론)\s+(?:[가-힣]+\s+){0,3}(?:안\s|않|못|부족|불가|어렵|없)"
+    # 변형: "~에서는/으로는 ... 얻을/알/찾을/기대할 수 없다"
+    r"|(?:에서는|으로는|로는)\s+(?:[가-힣]+\s+){0,3}(?:얻을|알|찾을|기대할)\s*수\s*없"
 )
 
 # 4-block-5: 열거 예고 숫자형 (5가지, 3가지 등)
@@ -335,6 +338,12 @@ _RE_ASSERTIVE_SHORT = re.compile(r"(?:분명|명확|확실|자명|간단)합니�
 _RE_TRIAD = re.compile(
     r"[가-힣]+(?:와|과)\s*[가-힣]+,\s*[가-힣]+(?:으로|로|를|을|이|가)"
 )
+
+# 4-report-5: 로드맵 마무리 상투 ("~이 다음 차례/숙제입니다")
+_RE_ROADMAP = re.compile(r"(?:다음\s?차례|다음\s?숙제|남은\s?숙제|다음\s?스텝)(?:입니다|다)[.]?")
+
+# 4-report-6: "~에 대한/대해" 밀도 (번역투 A-1, 1000자당 3회 이상)
+_RE_EDAEHAN = re.compile(r"에\s?대(?:한|해)")
 
 # 인용부호 시작 문자
 _OPEN_QUOTES = ('"', "'", "“", "‘", "《", "「", "‹", "「", "『")
@@ -422,6 +431,20 @@ def _check_axis4(text: str, sents: list[str]) -> tuple[list[str], list[str], lis
     for s in triad_sents[:2]:
         struct_hits.append(f"삼항나열:{s.strip()[:40]}")
         report_lines.append(f'  삼항 나열: "{s.strip()[:60]}"')
+    # ── 4-report-5: 로드맵 마무리 상투 ───────────────────────────────────
+    for s in sents:
+        if _RE_ROADMAP.search(s):
+            struct_hits.append(f"로드맵상투:{s.strip()[:40]}")
+            report_lines.append(f'  로드맵 상투: "{s.strip()[:60]}"')
+            break
+    # ── 4-report-6: "~에 대한/대해" 밀도 ─────────────────────────────────
+    nws = len(text.replace(" ", "").replace("\n", ""))
+    if nws > 0:
+        ed = len(_RE_EDAEHAN.findall(text))
+        ed_density = ed / nws * 1000
+        if ed_density >= 3.0 and ed >= 2:
+            struct_hits.append(f"에대한:{ed}회")
+            report_lines.append(f"  '에 대한' 밀도: {ed}회 ({ed_density:.1f}/1000자)")
     return block_lines, report_lines, struct_hits
 
 

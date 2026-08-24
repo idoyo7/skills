@@ -380,6 +380,29 @@ class TestAxis4Extended(unittest.TestCase):
         self.assertTrue(assertive_reports, f"단정 단문이 report에 있어야 함: {report_lines}")
 
 
+
+
+class TestAxis4Round2(unittest.TestCase):
+    def _axis4(self, text):
+        sents = _mod._split_sentences(text)
+        return _mod._check_axis4(text, sents)
+
+    def test_limit_frame_variant(self):
+        b, r, h = self._axis4("그때마다 던져야 하는 질문의 답을 공개 리더보드에서는 얻을 수 없습니다.")
+        self.assertTrue(any("한계 프레임" in x for x in b))
+
+    def test_roadmap_report_only(self):
+        b, r, h = self._axis4("실측하는 일이 다음 차례입니다.")
+        self.assertFalse(b)
+        self.assertTrue(any("로드맵" in x for x in r))
+
+    def test_edaehan_density_report(self):
+        text = "이 문제에 대한 답과 원인에 대한 분석과 구조에 대해 살펴봅니다."
+        b, r, h = self._axis4(text)
+        self.assertFalse(b)
+        self.assertTrue(any("에 대한" in x for x in r))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 
