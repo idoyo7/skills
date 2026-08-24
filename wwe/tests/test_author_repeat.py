@@ -1097,3 +1097,23 @@ class TestGenBlockCLI(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestSeedCorpusRegression(unittest.TestCase):
+    """공개 AI 작성 글 발췌에서 시드가 재현되는지 확인하는 회귀 테스트."""
+
+    def test_channel_talk_excerpt_hits_seeds(self):
+        repo = Path(__file__).resolve().parent.parent
+        src = repo / "tests" / "seed_corpus" / "channel-talk-luna-excerpt.md"
+        seed = repo / "references" / "author-tics.txt"
+        out = subprocess.run(
+            [sys.executable, str(repo / "scripts" / "author_repeat.py"),
+             "scan", "--src", str(src), "--seed", str(seed), "--json"],
+            capture_output=True, text=True)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        data = json.loads(out.stdout)
+        seed_keys = {f["key"] for f in data.get("findings", [])
+                     if f.get("kind", "").startswith("시드")}
+        expected = {"다만", "동시에", "한눈에", "그 지점", "구조적", "조용히", "얹는"}
+        missing = expected - seed_keys
+        self.assertFalse(missing, f"시드 미검출: {missing} / 검출: {seed_keys}")
