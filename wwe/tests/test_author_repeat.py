@@ -993,9 +993,9 @@ class TestNewFixes(unittest.TestCase):
         )
         block = mod.generate_tics_block(seed)
         self.assertIn("갈랐다", block)
-        self.assertIn("흐름이 나뉘었다", block)
+        self.assertNotIn("흐름이 나뉘었다", block)  # 대체어는 지침에 노출하지 않는다
         self.assertIn("따로 논다", block)
-        self.assertIn("평이한 말로", block)  # default instruction
+        self.assertIn("새로 쓴다", block)  # 재작성 지시
         # 파일 주석(보류 메모 포함)은 지침에 섞지 않는다
         self.assertNotIn("<!--", block)
         self.assertNotIn("보류", block)

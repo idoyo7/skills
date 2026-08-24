@@ -932,7 +932,7 @@ def generate_tics_block(seed_path=None):
     header = (
         "## 작성자 반복 구절 — 반드시 바꿀 것\n"
         "아래 표현은 이 작성자가 습관처럼 되풀이하는 것이다. "
-        "나오면 뜻을 보존한 채 평이한 말로 바꾼다. "
+        "나오면 단어를 바꿔치기하지 말고 그 문장을 새로 쓴다. 문장이 전달하는 사실·수치·판단만 추려 처음부터 다시 짓고, 원문의 서술 구조·비유·부정 프레임을 재사용하지 않는다. 대체 표현을 목록으로 만들지 마라 — 대체어가 곧 다음 습관이 된다. "
         "인용문·코드·고유명사 안은 건드리지 않는다. "
         "(humanize-korean quick-rules 원문 보존 철칙에 따라 인용·코드는 그대로다.)"
     )
@@ -951,10 +951,14 @@ def generate_tics_block(seed_path=None):
             phrase, instruction = stripped.split("=>", 1)
             phrase = phrase.strip()
             instruction = instruction.strip()
+            # 대체어 제안은 지침에 노출하지 않는다(3차 습관 방지). 괄호로 시작하는
+            # 운영 지시(예: 볼드 단독 줄 삭제)만 남긴다.
+            if instruction and not instruction.startswith("("):
+                instruction = ""
         else:
             phrase = stripped
             instruction = DEFAULT_TICS_INSTRUCTION
-        parts.append("- " + phrase + " → " + instruction)
+        parts.append(f"- {phrase} → {instruction}" if instruction else f"- {phrase}")
     return "\n".join(parts) + "\n"
 
 
