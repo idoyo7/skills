@@ -293,6 +293,134 @@ def _check_axis3(text: str) -> tuple[float, float, list[str]]:
 
 
 # ---------------------------------------------------------------------------
+# axis 4: 구조 패턴
+# ---------------------------------------------------------------------------
+
+# 4-block-1: 수사 의문 종결
+_RE_RHETORICAL_Q = re.compile(r"(?:는가|것인가|인가|일까|을까|ㄹ까)[.?]?\s*$")
+_RE_USER_Q_MARKER = re.compile(r"(?:주세요|주시|할까요|필요하신)")
+
+# 4-block-2: designed-to 직역
+_RE_DESIGNED_TO = re.compile(r"도록\s+(?:구성|설계|만들|배치|정의|작성)")
+
+# 4-block-3: it-cleft 강조 (내린 건 X였습니다 구문)
+_RE_IT_CLEFT = re.compile(
+    r"[가-힣]+(?:은|는|던|한|린|인|긴|둔|낸|킨)\s*(?:건|것은)\s+"
+    r"(?:[가-힣A-Za-z0-9 ]{1,20}?)(?:이었습니다|였습니다|이었다|였다|입니다)"
+)
+
+# 4-block-4: 한계 프레임 (~하나로는/만으로는 ... 안/않/못/부족...)
+_RE_LIMIT_FRAME = re.compile(
+    r"(?:하나로는|만으로는|만으론)\s+(?:[가-힣]+\s+){0,3}(?:안\s|않|못|부족|불가|어렵|없)"
+)
+
+# 4-block-5: 열거 예고 숫자형 (5가지, 3가지 등)
+_RE_ENUM_NUM = re.compile(r"[0-9]+\s*가지")
+
+# 4-report-1: 관형격 사슬 (의 2연쇄)
+_RE_GENITIVE_CHAIN = re.compile(r"[가-힣]+의\s+[가-힣]+의")
+
+# 4-report-2: 강조부사 목록
+_EMPHASIS_ADVERBS = ["실제로", "사실상", "분명히", "확실히", "명확히"]
+
+# 4-report-3: 단정 단문 (14자 이하 + 분명/명확/확실/자명/간단합니다)
+_RE_ASSERTIVE_SHORT = re.compile(r"(?:분명|명확|확실|자명|간단)합니다[.]?\s*$")
+
+# 4-report-4: 삼항 나열 (A와/과 B, C로/를/이...)
+_RE_TRIAD = re.compile(
+    r"[가-힣]+(?:와|과)\s*[가-힣]+,\s*[가-힣]+(?:으로|로|를|을|이|가)"
+)
+
+# 인용부호 시작 문자
+_OPEN_QUOTES = ('"', "'", "“", "‘", "《", "「", "‹", "「", "『")
+
+
+def _check_axis4(text: str, sents: list[str]) -> tuple[list[str], list[str], list[str]]:
+    """(block_lines, report_lines, struct_hits).
+
+    block_lines : reason에 추가할 차단 사유 (axis4 차단에 기여)
+    report_lines: 차단에는 안 넣고 reason 끝 '참고:'로만 표시
+    struct_hits : 로그용 히트 목록
+    """
+    block_lines: list[str] = []
+    report_lines: list[str] = []
+    struct_hits: list[str] = []
+
+    # ── 4-block-1: 수사 의문 종결 ────────────────────────────────────────
+    for s in sents:
+        if not _RE_RHETORICAL_Q.search(s):
+            continue
+        # 사용자 대상 실제 질문 제외 (주세요/주시/할까요/필요하신 포함)
+        if _RE_USER_Q_MARKER.search(s):
+            continue
+        # 인용부호로 시작하는 문장 제외 (인용된 발화)
+        s_stripped = s.strip()
+        if s_stripped and s_stripped[0] in _OPEN_QUOTES:
+            continue
+        struct_hits.append(f"수사의문:{s_stripped[:40]}")
+        block_lines.append(f'- 수사 의문 종결: "{s_stripped[:60]}"')
+        if len(block_lines) >= 2:
+            break
+
+    # ── 4-block-2: designed-to 직역 ──────────────────────────────────────
+    dt_sents = [s for s in sents if _RE_DESIGNED_TO.search(s)]
+    for s in dt_sents[:2]:
+        struct_hits.append(f"designed-to:{s.strip()[:40]}")
+        block_lines.append(f'- designed-to 직역: "{s.strip()[:60]}"')
+
+    # ── 4-block-3: it-cleft 강조 ─────────────────────────────────────────
+    cleft_sents = [s for s in sents if _RE_IT_CLEFT.search(s)]
+    for s in cleft_sents[:2]:
+        struct_hits.append(f"it-cleft:{s.strip()[:40]}")
+        block_lines.append(f'- it-cleft 강조: "{s.strip()[:60]}"')
+
+    # ── 4-block-4: 한계 프레임 ───────────────────────────────────────────
+    lf_sents = [s for s in sents if _RE_LIMIT_FRAME.search(s)]
+    for s in lf_sents[:2]:
+        struct_hits.append(f"한계프레임:{s.strip()[:40]}")
+        block_lines.append(f'- 한계 프레임: "{s.strip()[:60]}"')
+
+    # ── 4-block-5: 열거 예고 숫자형 ──────────────────────────────────────
+    enum_sents = [s for s in sents if _RE_ENUM_NUM.search(s)]
+    for s in enum_sents[:2]:
+        struct_hits.append(f"열거예고:{s.strip()[:40]}")
+        block_lines.append(f'- 열거 예고(숫자형): "{s.strip()[:60]}"')
+
+    # ── 4-report-1: 관형격 사슬 ──────────────────────────────────────────
+    gc_matches = _RE_GENITIVE_CHAIN.findall(text)
+    for m in gc_matches[:2]:
+        struct_hits.append(f"관형격:{m[:40]}")
+        report_lines.append(f"  관형격 사슬: \"{m[:60]}\"")
+
+    # ── 4-report-2: 강조부사 밀도 ────────────────────────────────────────
+    char_count_nws = len(text.replace(" ", "").replace("\n", ""))
+    if char_count_nws > 0:
+        emphasis_total = sum(text.count(adv) for adv in _EMPHASIS_ADVERBS)
+        density = emphasis_total / char_count_nws * 1000
+        if density >= 3.0:
+            struct_hits.append(f"강조부사:{emphasis_total}회/{char_count_nws}자")
+            report_lines.append(
+                f"  강조부사 밀도: {emphasis_total}회/{char_count_nws}자 ({density:.1f}/1000자)"
+            )
+
+    # ── 4-report-3: 단정 단문 ────────────────────────────────────────────
+    for s in sents:
+        s_stripped = s.strip()
+        if not _RE_ASSERTIVE_SHORT.search(s_stripped):
+            continue
+        s_nws = s_stripped.replace(" ", "")
+        if len(s_nws) <= 14:
+            struct_hits.append(f"단정단문:{s_stripped[:40]}")
+            report_lines.append(f'  단정 단문: "{s_stripped[:60]}"')
+    # ── 4-report-4: 삼항 나열 ────────────────────────────────────────────
+    triad_sents = [s for s in sents if _RE_TRIAD.search(s)]
+    for s in triad_sents[:2]:
+        struct_hits.append(f"삼항나열:{s.strip()[:40]}")
+        report_lines.append(f'  삼항 나열: "{s.strip()[:60]}"')
+    return block_lines, report_lines, struct_hits
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
@@ -335,6 +463,8 @@ def main() -> None:
         "inanimate_rate": None,
         "seed_hits": 0,
         "avg_len": 0.0,
+        "struct_hits": [],
+        "struct_report": [],
         "blocked": False,
     }
 
@@ -381,7 +511,15 @@ def main() -> None:
         for s in a3_long_sents[:2]:
             a3_reason_lines.append(f'- 긴 문장({len(s)}자): "{s[:60]}"')
 
-    blocked = a1_fail or a2_fail or a3_fail
+    # ── axis 4 ──────────────────────────────────────────────────────────────
+    a4_sents = _split_sentences(cleaned)
+    a4_block_lines, a4_report_lines, a4_struct_hits = _check_axis4(cleaned, a4_sents)
+    log_rec["struct_hits"] = a4_struct_hits
+    log_rec["struct_report"] = a4_report_lines
+
+    a4_fail = bool(a4_block_lines)
+
+    blocked = a1_fail or a2_fail or a3_fail or a4_fail
     log_rec["blocked"] = blocked
     _log(log_rec)
 
@@ -393,6 +531,10 @@ def main() -> None:
     reason_parts.extend(a1_reason_lines)
     reason_parts.extend(a2_reason_lines)
     reason_parts.extend(a3_reason_lines)
+    reason_parts.extend(a4_block_lines)
+    if a4_report_lines:
+        reason_parts.append("참고:")
+        reason_parts.extend(a4_report_lines)
     _block("\n".join(reason_parts))
     sys.exit(0)
 

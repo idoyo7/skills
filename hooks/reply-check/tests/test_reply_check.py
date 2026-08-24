@@ -39,6 +39,7 @@ _split_sentences = _mod._split_sentences
 _check_axis1 = _mod._check_axis1
 _check_axis2 = _mod._check_axis2
 _check_axis3 = _mod._check_axis3
+_check_axis4 = _mod._check_axis4
 _load_last_assistant = _mod._load_last_assistant
 
 
@@ -246,6 +247,136 @@ class TestCausativeInanimate(unittest.TestCase):
     def test_human_subject_not_flagged(self):
         self.assertFalse(_mod._RE_INANI.findall("저는 아침에 커피를 마셨다."))
         self.assertFalse(_mod._RE_INANI.findall("사용자가 버튼을 눌렀다."))
+
+
+class TestAxis4Structural(unittest.TestCase):
+    """axis4 구조 패턴 검사 (수사 의문, designed-to, 관형격 사슬, 강조부사)."""
+
+    # 패딩: 120자 이상 한국어를 채우기 위한 중립 문장
+    _PAD = (
+        "파일은 직접 확인하면 된다. "
+        "설정은 오른쪽 위에 있다. "
+        "버전을 먼저 맞춰야 한다. "
+        "로그를 확인해야 한다. "
+        "디렉터리 구조를 살펴야 한다. "
+        "터미널에서 실행해라. "
+    )
+
+    # ── 수사 의문 종결: block ─────────────────────────────────────────────
+    def test_rhetorical_question_block(self):
+        """'것인가.' 종결 수사 의문문이 포함된 산문은 block이고 reason에 문장이 있다."""
+        text = self._PAD + "그걸 무슨 근거로 결정할 것인가. " + self._PAD
+        path = _make_transcript(text)
+        try:
+            stdout, stderr, code = _run(path)
+        finally:
+            os.unlink(path)
+
+        self.assertEqual(code, 0)
+        self.assertTrue(stdout.strip(), "block 시 stdout이 있어야 한다")
+        data = json.loads(stdout.strip())
+        self.assertEqual(data.get("decision"), "block", f"decision=block 아님: {data}")
+        self.assertIn("것인가", data.get("reason", ""), "reason에 수사 의문 문장 포함 필요")
+
+    # ── designed-to 직역: block ───────────────────────────────────────────
+    def test_designed_to_block(self):
+        """'갖도록 구성' 패턴이 포함된 산문은 block이다."""
+        text = self._PAD + "재현성을 갖도록 구성한 케이스 셋입니다. " + self._PAD
+        path = _make_transcript(text)
+        try:
+            stdout, stderr, code = _run(path)
+        finally:
+            os.unlink(path)
+
+        self.assertEqual(code, 0)
+        self.assertTrue(stdout.strip(), "block 시 stdout이 있어야 한다")
+        data = json.loads(stdout.strip())
+        self.assertEqual(data.get("decision"), "block", f"decision=block 아님: {data}")
+        self.assertIn("도록", data.get("reason", ""), "reason에 designed-to 패턴 포함 필요")
+
+    # ── 사용자 실제 질문: 수사 의문으로 안 잡힘 ─────────────────────────
+    def test_user_question_not_flagged_as_rhetorical(self):
+        """'주세요'가 포함된 사용자 질문 문장은 수사 의문 히트가 없다."""
+        text = "이 값이 맞을까요? 확인해 주세요."
+        sents = _split_sentences(text)
+        block_lines, report_lines, struct_hits = _check_axis4(text, sents)
+        rhet_hits = [l for l in block_lines if "수사" in l]
+        self.assertEqual(rhet_hits, [], f"수사 의문 히트 없어야 함: {rhet_hits}")
+
+    # ── 관형격 사슬: block 아님, report에만 ──────────────────────────────
+    def test_genitive_chain_report_only(self):
+        """'의 ... 의' 관형격 사슬은 차단 사유가 아니라 report 항목에만 들어간다."""
+        text = "시스템의 성능의 한계가 드러났다."
+        sents = _split_sentences(text)
+        block_lines, report_lines, struct_hits = _check_axis4(text, sents)
+        self.assertEqual(block_lines, [], f"block_lines 없어야 함: {block_lines}")
+        self.assertTrue(
+            any("관형격" in r for r in report_lines),
+            f"관형격 사슬이 report에 있어야 함: {report_lines}",
+        )
+
+    # ── 강조부사 밀도: block 아님, report에만 ────────────────────────────
+    def test_emphasis_density_report_only(self):
+        """강조부사 밀도 ≥ 3/1000자여도 block 사유가 아니라 report 항목이다."""
+        # 짧은 텍스트에 실제로 3회 → 밀도 충분
+        text = "실제로 이것이다. 실제로 저것이다. 실제로 그것이다. " * 2
+        sents = _split_sentences(text)
+        block_lines, report_lines, struct_hits = _check_axis4(text, sents)
+        self.assertEqual(block_lines, [], f"block_lines 없어야 함: {block_lines}")
+        self.assertTrue(
+            any("강조부사" in r for r in report_lines),
+            f"강조부사 밀도가 report에 있어야 함: {report_lines}",
+        )
+
+
+class TestAxis4Extended(unittest.TestCase):
+    """axis4 확장 패턴 (it-cleft, 한계 프레임, 열거 예고, 단정 단문, 삼항 나열)."""
+
+    # ── it-cleft 강조: block ─────────────────────────────────────────────
+    def test_it_cleft_block(self):
+        """'내린 건 비용이었습니다' 구문은 block 사유다."""
+        text = "결국 마지막 결정을 내린 건 비용이었습니다."
+        sents = _split_sentences(text)
+        block_lines, report_lines, struct_hits = _mod._check_axis4(text, sents)
+        cleft_hits = [l for l in block_lines if "cleft" in l or "it-cleft" in l]
+        self.assertTrue(cleft_hits, f"it-cleft 히트가 block_lines에 있어야 함: {block_lines}")
+
+    # ── it-cleft 오탐: 확인했습니다 → 잡히지 않음 ─────────────────────
+    def test_it_cleft_false_positive(self):
+        """'그것이 사실인지 확인했습니다'는 it-cleft에 걸리지 않는다."""
+        text = "그것이 사실인지 확인했습니다."
+        sents = _split_sentences(text)
+        block_lines, report_lines, struct_hits = _mod._check_axis4(text, sents)
+        cleft_hits = [l for l in block_lines if "cleft" in l or "it-cleft" in l]
+        self.assertEqual(cleft_hits, [], f"오탐 없어야 함: {cleft_hits}")
+
+    # ── 한계 프레임: block ────────────────────────────────────────────────
+    def test_limit_frame_block(self):
+        """'하나로는 결정이 안 됩니다' 패턴은 block 사유다."""
+        text = "이 지표 하나로는 결정이 안 됩니다."
+        sents = _split_sentences(text)
+        block_lines, report_lines, struct_hits = _mod._check_axis4(text, sents)
+        lf_hits = [l for l in block_lines if "한계" in l]
+        self.assertTrue(lf_hits, f"한계 프레임 히트가 block_lines에 있어야 함: {block_lines}")
+
+    # ── 열거 예고(숫자형): block ──────────────────────────────────────────
+    def test_enum_num_block(self):
+        """'5가지 지표' 같은 숫자형 열거 예고는 block 사유다."""
+        text = "위 5가지 지표에서 이미 흔들렸던 모델입니다."
+        sents = _split_sentences(text)
+        block_lines, report_lines, struct_hits = _mod._check_axis4(text, sents)
+        enum_hits = [l for l in block_lines if "열거" in l]
+        self.assertTrue(enum_hits, f"열거 예고 히트가 block_lines에 있어야 함: {block_lines}")
+
+    # ── 단정 단문: report에만 ─────────────────────────────────────────────
+    def test_assertive_short_report_only(self):
+        """14자 이하 단정 단문('아래쪽은 분명합니다.')은 report 항목에만 들어간다."""
+        text = "아래쪽은 분명합니다."
+        sents = _split_sentences(text)
+        block_lines, report_lines, struct_hits = _mod._check_axis4(text, sents)
+        self.assertEqual(block_lines, [], f"block_lines 없어야 함: {block_lines}")
+        assertive_reports = [r for r in report_lines if "단정" in r]
+        self.assertTrue(assertive_reports, f"단정 단문이 report에 있어야 함: {report_lines}")
 
 
 if __name__ == "__main__":
