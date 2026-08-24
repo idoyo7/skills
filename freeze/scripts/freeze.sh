@@ -7,6 +7,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE_ROOT="${FREEZE_STATE_DIR:-$HOME/.local/state/freeze}"
 PROJECTS_DIR="${CLAUDE_PROJECTS_DIR:-$HOME/.claude/projects}"
 
+# handoff 경로를 절대 realpath 로 정규화한다. reserve/arm/done 모두 이 정규화를
+# 거쳐 저장·비교하므로, SKILL.md 가 안내하는 상대경로 예약과 절대경로 done 호출이
+# 문자열만 달라 서로 못 알아보는 사고를 막는다(major 2). -m 은 대상이 아직 없거나
+# 이미 지워졌어도 정규화된 경로를 낸다 — done 이 그런 handoff 도 "대상 없음"으로
+# 안전하게 판정할 수 있게.
+normalize_handoff() { realpath -m -- "$1"; }
+
+# handoff 경로 하나를 하나의 파일명으로 접는다 — done-by-handoff 마커 경로에 쓴다.
+handoff_hash() { printf '%s' "$1" | sha256sum | cut -d' ' -f1; }
+
 usage() {
   cat <<'EOF'
 freeze.sh <command> [args]
@@ -16,14 +26,31 @@ freeze.sh <command> [args]
                                     예약을 등록하고 슬리퍼를 기동한다.
                                     <시각>: auto | epoch | +30m | +2h | +90s | HH:MM | ISO8601
                                     [--permission-mode <mode>] 기본 bypassPermissions
+                                    [--mode resume|ledger] 기본 resume — 재개 방식(아래 참고)
+                                    [--pad <초>] auto 추정에만 기본 300 적용. 명시 시각(epoch/+N/HH:MM/ISO)엔
+                                                 --pad 를 직접 줘야만 더해진다(계약 보존).
   arm --cwd <dir> --handoff <path> [--chain-left <n>] [--job <name>]
+      [--at <시각>] [--mode resume|ledger] [--pad <초>] [--permission-mode <mode>]
                                     선예약(얼음 대기). 작업 시작 시점에 걸어두고 남은 쿼터를 끝까지 태운다.
                                     한도로 막히면 예약분이 알아서 잇고, 먼저 끝나면 `done` 으로 해제한다.
                                     --chain-left 는 창을 넘겨가며 이어붙일 최대 횟수(기본 2).
-  done --handoff <path>             완료 신호. 걸어둔 예약이 재개 없이 조용히 종료한다.
-  status                            예약 목록과 상태.
+                                    --at 기본값은 auto(직접 arm 할 때). 체인 내부 재무장(thaw.sh)은
+                                    리셋 경계에서 auto 추정이 UNKNOWN 이 되는 것을 피하려고 명시 epoch 를 넘긴다.
+  done --handoff <path>             완료 신호. 이 handoff 로 걸린 활성 예약 전체(체인 중이면 현재 창 +
+                                    선무장된 다음 창 모두)에 조용히 종료하라는 신호를 남긴다.
+                                    handoff 경로는 절대 realpath 로 정규화해 비교하므로 reserve/arm 때
+                                    상대경로를 썼어도 여기선 절대경로로 불러도 된다(그 반대도 동일).
+                                    이 handoff 로 걸린 활성 예약이 하나도 없으면 stderr 로 알리고
+                                    비영(非零) 종료코드를 낸다 — 자동 호출자가 실패를 감지할 수 있게.
+  status                            예약 목록과 상태 (체인 선무장 실패 경고 포함).
   cancel <job>                      예약 취소 (슬리퍼 종료).
   check                             시각이 지났는데 슬리퍼가 죽어 있는 예약을 지금 실행 (캐치업).
+
+두 가지 재개 모드(--mode):
+  resume  (기본) — claude -p --resume <세션> 으로 대화 전체를 복원해 이어간다.
+  ledger  — 대화를 복원하지 않고, wfledger.sh 로 만든 원장 한 장만 실은 신선한 세션을 띄운다.
+            5시간 창을 넘겨 재개하면 캐시 TTL(최대 1시간)이 이미 끝나 대화 전체를
+            콜드 리드해야 하는 비용을 피하려는 모드 — freeze/SKILL.md 의 "두 재개 모드" 참고.
 EOF
 }
 
@@ -108,30 +135,43 @@ console.log(blockEnd && now < blockEnd ? String(Math.floor(blockEnd)) : 'UNKNOWN
 JS
 }
 
-# --at 인자를 epoch 로 변환
+# --at 인자를 epoch 로 변환.
+# pad(초) 계약 — auto 로 추정한 시각에만 기본 300(5분)을 적용한다: 리셋 직후엔
+# 아직 한도가 실제로 안 풀렸을 수 있어 추정 오차를 흡수할 여유가 필요해서다.
+# epoch/+N/HH:MM/ISO 처럼 사용자가 시각을 직접 지정했을 때는 그 시각 자체가
+# 계약이므로 기본 패딩을 붙이지 않는다 — 사용자가 --pad 를 명시로 줬을 때만 더한다.
+# (2026-08-24 결정. 이전엔 case 분기 밖에서 무조건 + pad 를 해서 --at 15:00 이
+# 15:05 에 뜨는 회귀가 있었다 — freeze/tests/test_freeze.sh 의 "명시 --at 은 pad 미적용" 참고.)
+# stdout 에 "epoch effective_pad" 두 값을 공백으로 구분해 낸다 — effective_pad 는
+# 호출자가 reservation.json 의 pad 필드(체인 재무장 때 그대로 물려줄 값)로 저장한다.
 resolve_at() {
-  local at="$1" epoch
+  local at="$1" pad_given="$2" epoch pad
   case "$at" in
     auto)
       epoch=$(cmd_estimate)
       [ "$epoch" = "UNKNOWN" ] && { echo "ERROR: 땡 시각 추정 실패 — --at 으로 직접 지정 필요" >&2; return 1; }
+      pad="${pad_given:-300}"
       ;;
     +*[smh])
       local n=${at#+}; local unit=${n: -1}; n=${n%?}
       case "$unit" in s) epoch=$(( $(date +%s) + n ));; m) epoch=$(( $(date +%s) + n*60 ));; h) epoch=$(( $(date +%s) + n*3600 ));; esac
+      pad="${pad_given:-0}"
       ;;
     [0-9][0-9]:[0-9][0-9])
       epoch=$(date -d "$at" +%s)
       [ "$epoch" -le "$(date +%s)" ] && epoch=$(date -d "tomorrow $at" +%s)  # 이미 지난 시각이면 내일
+      pad="${pad_given:-0}"
       ;;
     ''|*[!0-9]*)
       epoch=$(date -d "$at" +%s) || { echo "ERROR: 시각 해석 실패: $at" >&2; return 1; }
+      pad="${pad_given:-0}"
       ;;
     *)
       epoch="$at"
+      pad="${pad_given:-0}"
       ;;
   esac
-  echo "$epoch"
+  echo "$(( epoch + pad )) $pad"
 }
 
 # cwd 로 현재 세션 uuid 자동 탐지 (해당 프로젝트 디렉토리의 최신 jsonl)
@@ -148,7 +188,9 @@ detect_session() {
 cmd_reserve() {
   # 기본 bypassPermissions — 무인 재개엔 승인자가 없어 acceptEdits 로는 Bash 가 전부 거부된다(E2E 실측).
   # 사용자 명시 결정(2026-08-17). --permission-mode 로 건별 하향 가능.
-  local at="" cwd="" handoff="" session="" job="" perm="bypassPermissions"
+  # pad 기본값은 여기서 정하지 않는다 — auto 냐 명시 시각이냐에 따라 resolve_at 이 결정한다.
+  # mode: resume(기본, 대화 전체 --resume) | ledger(원장 한 장만 실은 신선한 세션).
+  local at="" cwd="" handoff="" session="" job="" perm="bypassPermissions" pad="" mode="resume" created_at=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --at) at="$2"; shift 2;;
@@ -157,30 +199,63 @@ cmd_reserve() {
       --session) session="$2"; shift 2;;
       --job) job="$2"; shift 2;;
       --permission-mode) perm="$2"; shift 2;;
+      --pad) pad="$2"; shift 2;;
+      --mode) mode="$2"; shift 2;;
+      # 내부 전용(문서화 안 함) — thaw.sh 의 체인 재무장이 부모 예약의 created_at 을
+      # 자식에게 그대로 물려줄 때만 쓴다. major 3: handoff 로 키잉된 완료 신호를
+      # "이 예약의 created_at 보다 오래됐으면 무시" 로 걸러내려면, 체인으로 이어지는
+      # 자식 예약도 부모와 같은 created_at 을 가져야 부모가 이미 받은 신호를 본다.
+      # 단위는 밀리초(Date.now()) — 초 단위였을 때 같은 handoff 를 빠르게 재사용하는
+      # 무관한 예약들이 같은 초에 몰려 오판정을 낸 사고가 있었다(테스트 실측).
+      --created-at) created_at="$2"; shift 2;;
       *) echo "ERROR: unknown arg $1" >&2; return 1;;
     esac
   done
   [ -n "$at" ] && [ -n "$cwd" ] && [ -n "$handoff" ] || { usage; return 1; }
   [ -f "$handoff" ] || { echo "ERROR: handoff 파일 없음: $handoff" >&2; return 1; }
+  case "$mode" in resume|ledger) ;; *) echo "ERROR: --mode 는 resume|ledger 만 지원: $mode" >&2; return 1;; esac
+  handoff=$(normalize_handoff "$handoff")
 
-  local epoch; epoch=$(resolve_at "$at") || return 1
-  [ -n "$session" ] || session=$(detect_session "$cwd") || return 1
+  local resolved epoch effective_pad
+  resolved=$(resolve_at "$at" "$pad") || return 1
+  read -r epoch effective_pad <<< "$resolved"
+  if [ -z "$session" ]; then
+    if [ "$mode" = "resume" ]; then
+      # resume 모드는 --resume <세션> 이 계약이므로 세션 탐지 실패는 치명적.
+      session=$(detect_session "$cwd") || return 1
+    else
+      # ledger 모드는 대화를 복원하지 않으므로 세션 UUID 가 없어도 재개 자체는 된다
+      # (원장의 session: 필드는 wfledger.sh run/journal 의 경로 계산에만 쓰인다 —
+      # 없으면 그 필드가 비고, 재개 세션이 wfledger.sh set-session 으로 채우면 된다).
+      # 그래서 프로젝트 transcript 디렉토리가 아직 없어도(신규 cwd) reserve 자체는 죽지 않는다.
+      session=$(detect_session "$cwd" 2>/dev/null) || session=""
+    fi
+  fi
   [ -n "$job" ] || job="freeze-$(date +%Y%m%d-%H%M%S)"
 
   local dir="$STATE_ROOT/$job"
   mkdir -p "$dir"
+  # 이전에 같은 job 이름을 썼다가 남은 완료 마커가 있으면 지운다 — done 마커는
+  # 이 job 디렉토리 안에만 있으므로(아래 cmd_done 참고) 다른 job 을 건드릴 일이 없다.
+  rm -f "$dir/done"
+  # major 1 — 같은 job 이름으로 재예약하면 이전 슬리퍼가 살아있는 채로 새 슬리퍼가
+  # 하나 더 뜬다(sleeper.pid 는 마지막 것만 남으므로 이전 것은 고아가 되어 나중에
+  # 자기 몫의 재개를 따로 부른다 — 재현: reserve 를 짧은 간격으로 두 번 부르면
+  # calls.log 에 재개 호출이 서로 다른 pid 로 두 줄 찍힌다). 새 슬리퍼를 띄우기
+  # 전에 기존 sleeper.pid 가 살아있으면 정리한다.
+  reap_stale_sleeper "$dir" "$job"
   node -e '
-const [p, job, session, cwd, handoff, epoch, perm] = process.argv.slice(1);
+const [p, job, session, cwd, handoff, epoch, perm, mode, pad, createdAt] = process.argv.slice(1);
 require("fs").writeFileSync(p, JSON.stringify({
   job, session_id: session, cwd, handoff,
-  resume_at: parseInt(epoch), created_at: Math.floor(Date.now()/1000),
-  permission_mode: perm, status: "frozen"
+  resume_at: parseInt(epoch), created_at: createdAt ? parseInt(createdAt) : Date.now(),
+  permission_mode: perm, mode, pad: parseInt(pad), status: "frozen"
 }, null, 2));
-' "$dir/reservation.json" "$job" "$session" "$cwd" "$handoff" "$epoch" "$perm"
+' "$dir/reservation.json" "$job" "$session" "$cwd" "$handoff" "$epoch" "$perm" "$mode" "$effective_pad" "$created_at"
 
   setsid nohup "$SCRIPT_DIR/thaw.sh" "$job" >> "$dir/thaw.log" 2>&1 < /dev/null &
   echo $! > "$dir/sleeper.pid"
-  echo "얼음 — job=$job session=$session 땡=$(date -d "@$epoch" '+%m/%d %H:%M') ($(( (epoch - $(date +%s)) / 60 ))분 후)"
+  echo "얼음 — job=$job session=${session:-(미탐지)} mode=$mode 땡=$(date -d "@$epoch" '+%m/%d %H:%M') ($(( (epoch - $(date +%s)) / 60 ))분 후)"
 }
 
 job_field() { node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1]))[process.argv[2]] ?? "")' "$1" "$2"; }
@@ -193,16 +268,41 @@ pid_alive() {
   [ -n "$state" ] && [ "${state:0:1}" != "Z" ]
 }
 
+# major 1 — 새 슬리퍼를 띄우기 전에 같은 job 디렉토리의 기존 sleeper.pid 가
+# 살아있으면 정리한다. 죽어 있으면(정상 종료·크래시 등) 조용히 넘어간다.
+# pid 재사용 오인을 막으려고 죽이기 전에 프로세스의 실제 커맨드라인이
+# "thaw.sh <이 job>" 인지 확인한다 — OS 가 그 사이 이 pid 를 무관한 프로세스에
+# 재할당했다면(드물지만 가능) 그 프로세스는 건드리지 않는다.
+reap_stale_sleeper() {
+  local dir="$1" job="$2" old_pid args
+  old_pid=$(cat "$dir/sleeper.pid" 2>/dev/null || true)
+  [ -n "$old_pid" ] || return 0
+  pid_alive "$old_pid" || return 0
+  args=$(ps -o args= -p "$old_pid" 2>/dev/null || true)
+  case "$args" in
+    *thaw.sh*)
+      # 마지막 인자가 정확히 이 job 이름인지 확인 — "dj" 재예약이 "dj2" 슬리퍼를
+      # 오인해서 죽이는 것을 막는다.
+      if [ "${args##* }" = "$job" ]; then
+        kill "$old_pid" 2>/dev/null || true
+        echo "재예약 — 이전 슬리퍼 종료: job=$job pid=$old_pid" >&2
+      fi
+      ;;
+  esac
+}
+
 cmd_status() {
   local found=0
   for r in "$STATE_ROOT"/*/reservation.json; do
     [ -f "$r" ] || continue
     found=1
-    local job status epoch pid alive="dead"
+    local job status epoch pid alive="dead" warn
     job=$(job_field "$r" job); status=$(job_field "$r" status); epoch=$(job_field "$r" resume_at)
     pid=$(cat "$(dirname "$r")/sleeper.pid" 2>/dev/null || true)
     pid_alive "$pid" && alive="alive"
     printf '%-24s %-8s 땡=%s sleeper=%s\n' "$job" "$status" "$(date -d "@$epoch" '+%m/%d %H:%M')" "$alive"
+    warn=$(job_field "$r" chain_warning)
+    [ -n "$warn" ] && printf '  경고: %s\n' "$warn"
   done
   [ "$found" = 0 ] && echo "예약 없음"
   return 0   # found=1 일 때 && 단락이 exit 1 로 새는 것 방지
@@ -238,10 +338,18 @@ cmd_check() {
 }
 
 # arm — 작업 시작 시점에 미리 거는 예약.
-# reserve 와 다른 점은 셋: 땡 시각을 항상 auto 로 잡고, 체인 횟수를 심고,
-# 이전 완료 마커를 지워 스테일 신호로 즉시 종료하는 사고를 막는다.
+# reserve 와 다른 점은 둘: 땡 시각 기본값이 auto 고(--at 으로 오버라이드 가능 —
+# thaw.sh 의 체인 내부 재무장이 리셋 경계의 estimate=UNKNOWN 을 피하려고 쓴다),
+# 체인 횟수를 심는다. 이전 완료 마커 제거는 cmd_reserve 가 job 디렉토리 단위로
+# 알아서 한다(handoff 가 아니라 job 으로 스코프돼 있어 다른 job 신호를 안 건드린다).
+#
+# job 이름은 여기서 먼저 정하고 반드시 --job 으로 reserve 에 넘긴다 — reserve 가
+# 자체적으로 기본 이름을 생성하게 두면(같은 초에 여러 세션이 동시에 arm 할 때)
+# "가장 최근 수정된 reservation.json" 을 ls -t 로 고르는 식의 사후 추정이 필요해지고,
+# 그러면 동시에 도는 다른 잡의 reservation.json 을 잘못 골라 체인 정보를 덮어쓸 수 있다.
+# job 이름을 먼저 확정해두면 그런 추정 자체가 필요 없다.
 cmd_arm() {
-  local cwd="" handoff="" job="" chain_left="2" perm="bypassPermissions"
+  local cwd="" handoff="" job="" chain_left="2" perm="bypassPermissions" pad="" mode="resume" at="auto" session="" created_at=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --cwd) cwd="$2"; shift 2;;
@@ -249,24 +357,58 @@ cmd_arm() {
       --job) job="$2"; shift 2;;
       --chain-left) chain_left="$2"; shift 2;;
       --permission-mode) perm="$2"; shift 2;;
+      --pad) pad="$2"; shift 2;;
+      --mode) mode="$2"; shift 2;;
+      --at) at="$2"; shift 2;;
+      --session) session="$2"; shift 2;;
+      --created-at) created_at="$2"; shift 2;;  # 내부 전용 — cmd_reserve 주석 참고
       *) echo "ERROR: unknown arg $1" >&2; return 1;;
     esac
   done
   [ -n "$cwd" ] && [ -n "$handoff" ] || { usage; return 1; }
-  rm -f "${handoff}.freeze-done"   # 이전 회차의 완료 마커 제거
-  cmd_reserve --at auto --cwd "$cwd" --handoff "$handoff" --permission-mode "$perm" \
-    ${job:+--job "$job"} || return 1
-  # 방금 만든 예약에 체인 정보를 심는다 (reserve 가 만든 최신 reservation.json)
-  local latest; latest=$(ls -t "$STATE_ROOT"/*/reservation.json 2>/dev/null | head -1)
-  [ -n "$latest" ] && node -e '
+  [ -n "$job" ] || job="freeze-$(date +%Y%m%d-%H%M%S)-$$"
+  local -a extra=()
+  [ -n "$pad" ] && extra+=(--pad "$pad")
+  [ -n "$session" ] && extra+=(--session "$session")
+  [ -n "$created_at" ] && extra+=(--created-at "$created_at")
+  cmd_reserve --at "$at" --cwd "$cwd" --handoff "$handoff" --permission-mode "$perm" \
+    --job "$job" --mode "$mode" "${extra[@]}" || return 1
+  # 방금 만든 예약(자기 job 이름으로 확정된 경로)에만 체인 정보를 심는다
+  local res="$STATE_ROOT/$job/reservation.json"
+  node -e '
 const fs = require("fs"), [p, left] = process.argv.slice(1);
 const d = JSON.parse(fs.readFileSync(p));
-d.chain = 1; d.chain_left = parseInt(left); d.mode = "arm";
+d.chain = 1; d.chain_left = parseInt(left); d.via = "arm";
 fs.writeFileSync(p, JSON.stringify(d, null, 2));
-' "$latest" "$chain_left"
-  echo "무장 완료 — 남은 쿼터를 계속 쓰다가 막히면 예약분이 잇는다 (체인 ${chain_left}회). 먼저 끝나면: freeze.sh done --handoff $handoff"
+' "$res" "$chain_left"
+  echo "무장 완료 — job=$job 남은 쿼터를 계속 쓰다가 막히면 예약분이 잇는다 (체인 ${chain_left}회). 먼저 끝나면: freeze.sh done --handoff $handoff"
 }
 
+# done — 완료 신호. 이 handoff 를 참조하는 "활성"(frozen|running) 예약 전부에 신호를 남긴다.
+# 마커는 handoff 옆이 아니라 각 job 자신의 상태 디렉토리(<job>/done) 안에 쓴다 —
+# 체인 중엔 같은 handoff 를 참조하는 예약이 두 개(지금 창 + 선무장된 다음 창)
+# 동시에 활성일 수 있는데, 이 둘 다에 신호를 남겨야 "지금 창이 방금 끝났으니
+# 다음 창은 필요 없다"는 뜻이 두 안전장치(thaw.sh 의 명시적 cancel + 다음 창
+# 자신의 대기 루프)에 전부 전달된다. handoff 를 우연히 공유하는 서로 무관한
+# 다른 세션의 예약까지 같이 깨울 위험은 남지만, 이건 job 이 아니라 handoff 만
+# 아는 호출자(재개 세션)의 입력 자체가 가진 모호함이지 이 함수가 만드는 버그는
+# 아니다 — 예전처럼 "무관한 예약을 지운다" 가 아니라 "무관한 예약에도 완료를
+# 알린다" 로 실패 방향이 훨씬 덜 파괴적으로 바뀌었을 뿐이다.
+#
+# major 3 — 위 job 마커는 "호출 시점에 이미 존재하는" 예약에만 남는다. 체인 재무장은
+# thaw.sh 가 재개를 부르기 "전에" 다음 창을 미리 거는데, 그 사이(무장 직후~재개 직전)
+# thaw 프로세스가 죽으면 다음 창은 아무 마커도 못 받은 채 자기 차례에 깨어나 이미
+# 끝난 작업을 다시 연다. 그래서 handoff 로 키잉된 신호도 함께 남긴다 — job 이 아니라
+# handoff 해시로 경로가 정해지므로 "이 job 이 호출 시점에 존재했는가"와 무관하게,
+# 나중에 태어난 예약도 자기 대기 루프에서 이 파일을 그냥 찾아서 본다.
+# 2차에서 이 방식을 버린 이유는 arm 이 handoff 마커를 무조건 지워서(재사용 대비)
+# 아직 살아있는 다른 예약의 신호까지 날렸기 때문 — 이번엔 지우지 않는다. 대신
+# 마커에 타임스탬프를 넣고, 읽는 쪽(thaw.sh)이 "내 예약의 created_at 보다 오래된
+# 신호는 무시" 로 걸러낸다. 체인 재무장은 자식에게 부모의 created_at 을 그대로
+# 물려주므로(cmd_arm --created-at), 부모가 실행 중 받은 신호를 자식도 그대로 보되,
+# 같은 handoff 경로를 재사용하는 완전히 새 예약(항상 새 created_at)은 옛 신호보다
+# 나중에 태어나므로 안 걸린다. 지운다는 개념이 필요 없어 다른 예약 신호를 실수로
+# 지울 걱정도 없다.
 cmd_done() {
   local handoff=""
   while [ $# -gt 0 ]; do
@@ -276,8 +418,30 @@ cmd_done() {
     esac
   done
   [ -n "$handoff" ] || { usage; return 1; }
-  date '+%F %T 완료' > "${handoff}.freeze-done"
-  echo "완료 신호 기록 — 걸린 예약은 재개 없이 종료한다: ${handoff}.freeze-done"
+  handoff=$(normalize_handoff "$handoff")
+  local marked=0
+  for r in "$STATE_ROOT"/*/reservation.json; do
+    [ -f "$r" ] || continue
+    [ "$(job_field "$r" handoff)" = "$handoff" ] || continue
+    case "$(job_field "$r" status)" in frozen|running) ;; *) continue;; esac
+    date '+%F %T 완료' > "$(dirname "$r")/done"
+    marked=$((marked + 1))
+  done
+  # handoff 키잉 신호는 활성 예약 매칭 여부와 무관하게 항상 남긴다 — 이게 바로
+  # "아직 태어나지 않은 다음 창"을 구하려는 마커라서, 지금 매칭되는 job 이 있는지는
+  # 이 마커의 가치와 상관없다. created_at(아래 참고)과 같은 시계(밀리초, Date.now())를
+  # 써야 비교가 성립하므로 date +%s(초) 가 아니라 node 로 찍는다 — 초 단위였을 때
+  # 자동화 루프처럼 같은 handoff 로 여러 예약이 1초 안에 오가면 무관한 예약끼리
+  # created_at 과 신호 시각이 같은 값으로 뭉개져 오판정이 났다(테스트 스위트 자체가
+  # handoff 경로를 재사용하며 이 충돌을 실측으로 드러냈다).
+  mkdir -p "$STATE_ROOT/done-by-handoff"
+  node -e 'console.log(Date.now())' > "$STATE_ROOT/done-by-handoff/$(handoff_hash "$handoff")"
+  if [ "$marked" -gt 0 ]; then
+    echo "완료 신호 기록 — 활성 예약 ${marked}건에 전달, 재개 없이 종료한다: $handoff"
+  else
+    echo "완료 신호 기록 대상 없음 — 이 handoff 로 걸린 활성 예약이 없다: $handoff" >&2
+    return 1
+  fi
 }
 
 case "${1:-}" in

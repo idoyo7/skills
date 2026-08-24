@@ -21,11 +21,12 @@ git clone git@github.com:idoyo7/skills.git ~/src/skills
 
 ## 수록 훅
 
-`install.sh`가 스킬 심링크에 이어 Stop 훅 설치와 `settings.json` 등록까지 처리한다.
+`install.sh`가 스킬 심링크에 이어 각 훅의 설치(심링크)와 `settings.json` 등록까지 처리한다. 어느 이벤트에 등록될지는 훅 디렉토리 안의 `hook.conf`가 선언한다.
 
 | 디렉터리 | 이벤트 | 설명 |
 |---|---|---|
 | `hooks/reply-check/` | Stop | 마지막 assistant 메시지의 한국어 산문을 세 축(무생물 주어·반복 구절·긴 문장)으로 검사, 기준 초과 시 재작성 요청 |
+| `hooks/workflow-arm/` | PreToolUse (`Workflow`) | 재개 예약 없이 큰 Workflow를 돌리려는 호출을 세션당 한 번 막고, freeze 예약 절차를 안내 |
 
 훅 설치만 건너뛰려면 `install.sh --no-hooks`로 실행한다.
 
