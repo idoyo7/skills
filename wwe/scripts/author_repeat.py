@@ -725,6 +725,10 @@ def load_seed(path: Path | None = None) -> list[tuple[str, str]]:
         phrase = line.split("=>")[0].strip() if "=>" in line else line
         if phrase:
             items.append((phrase, current_section))
+            # 활용형 강제 매칭: 용언 시드("갈랐다")는 어간("갈랐")으로도 등록해
+            # 갈랐나/갈랐고/갈랐지만 같은 활용형을 함께 잡는다.
+            if phrase.endswith("다") and " " not in phrase and len(phrase) >= 3:
+                items.append((phrase[:-1], current_section))
     return items
 
 
