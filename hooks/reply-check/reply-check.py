@@ -212,7 +212,7 @@ _DEFAULT_SEEDS: list[str] = [
     # 작성자(Claude) 고유 반복구 — author-tics.txt가 없을 때의 폴백
     "갈랐다", "따로 논다", "뿌리가 된", "거칠다", "못박았다", "못박아뒀다",
     "손은 내가 댔다", "하는 자리다", "한눈에", "모양새", "셈이다", "그 지점",
-    "질문을 던지", "물음을 던지",
+    "질문을 던지", "물음을 던지", "갈랐", "키웠나", "거칠",
 ]
 
 # 용언 어간 추출을 위한 정규식
@@ -236,9 +236,18 @@ def _load_seeds() -> list[str]:
                     key = line.split("=>", 1)[0].strip()
                     if key:
                         seeds.append(key)
+                        # 활용형 강제 매칭: "갈랐다"류 용언 시드는 어간("갈랐")으로도
+                        # 매치해 갈랐나/갈랐고/갈랐지만을 함께 잡는다.
+                        if key.endswith("다") and " " not in key and len(key) >= 3:
+                            seeds.append(key[:-1])
         except Exception as exc:
             _err(f"author-tics.txt read failed: {exc}")
-    return seeds
+    # 어간이 전체형의 부분열이므로, 매치 집계 시 중복을 피하려 긴 것부터 정렬해 반환
+    seen = set(); out = []
+    for k in sorted(seeds, key=len, reverse=True):
+        if k not in seen:
+            seen.add(k); out.append(k)
+    return out
 
 
 def _check_axis2(text: str) -> tuple[list[str], str | None, int]:
@@ -303,7 +312,7 @@ def _check_axis3(text: str) -> tuple[float, float, list[str]]:
 # ---------------------------------------------------------------------------
 
 # 4-block-1: 수사 의문 종결
-_RE_RHETORICAL_Q = re.compile(r"(?:는가|것인가|인가|일까|을까|ㄹ까)[.?]?\s*$")
+_RE_RHETORICAL_Q = re.compile(r"(?:는가|것인가|인가|일까|을까|ㄹ까|았나|었나|랐나|웠나|겼나|났나)[.?]?\s*$")
 _RE_USER_Q_MARKER = re.compile(r"(?:주세요|주시|할까요|필요하신)")
 
 # 4-block-2: designed-to 직역

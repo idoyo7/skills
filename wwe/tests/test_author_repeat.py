@@ -1095,6 +1095,26 @@ class TestGenBlockCLI(unittest.TestCase):
         )
 
 
+
+
+class TestSeedStemMatching(unittest.TestCase):
+    """용언 시드의 활용형(갈랐나 등)이 어간 매칭으로 잡히는지."""
+
+    def test_inflected_seed_hit(self):
+        with tempfile.TemporaryDirectory() as td:
+            seed = Path(td) / "seed.txt"
+            seed.write_text("## 에세이\n갈랐다 => x\n", encoding="utf-8")
+            src = Path(td) / "doc.md"
+            src.write_text("이번 결정이 두 진영을 갈랐나. 아무도 답하지 못했다.\n", encoding="utf-8")
+            out = subprocess.run(
+                [sys.executable, str(Path(__file__).resolve().parent.parent / "scripts" / "author_repeat.py"),
+                 "scan", "--src", str(src), "--seed", str(seed), "--json"],
+                capture_output=True, text=True)
+            data = json.loads(out.stdout)
+            keys = {f["key"] for f in data.get("findings", []) if f.get("kind", "").startswith("시드")}
+            self.assertTrue(any(k.startswith("갈랐") for k in keys), keys)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

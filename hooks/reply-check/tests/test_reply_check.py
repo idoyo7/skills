@@ -403,6 +403,19 @@ class TestAxis4Round2(unittest.TestCase):
         self.assertTrue(any("에 대한" in x for x in r))
 
 
+
+
+class TestStemSeedAndPastQ(unittest.TestCase):
+    def test_seed_stem_loaded(self):
+        seeds = _mod._load_seeds()
+        self.assertIn("갈랐", seeds)
+
+    def test_past_interrogative_blocked(self):
+        sents = _mod._split_sentences("그 선택이 시장 규모를 키웠나?")
+        b, r, hits = _mod._check_axis4("그 선택이 시장 규모를 키웠나?", sents)
+        self.assertTrue(any("수사 의문" in x for x in b))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 
