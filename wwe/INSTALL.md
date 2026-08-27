@@ -8,19 +8,14 @@ Claude Code가 설치되어 있어야 한다. Skill을 지원하는 버전이면
 
 ## 1. 스킬 설치
 
-두 경로 중 하나를 고른다. 모든 프로젝트에서 쓰고 싶으면 사용자 레벨로, 특정 프로젝트에서만 쓰려면 프로젝트 레벨로 클론한다.
-
-사용자 레벨:
+이 스킬은 `idoyo7/skills` 저장소의 `wwe/` 에 있다(예전 표준 저장소 `idoyo7/humanize-docs` 는 여기로 합쳐졌다). 저장소를 원하는 곳에 클론하고 `install.sh` 를 돌린다.
 
 ```bash
-git clone https://github.com/idoyo7/humanize-docs.git ~/.claude/skills/humanize-docs
+git clone https://github.com/idoyo7/skills.git ~/src/skills
+cd ~/src/skills && bash install.sh
 ```
 
-프로젝트 레벨:
-
-```bash
-git clone https://github.com/idoyo7/humanize-docs.git <프로젝트>/.claude/skills/humanize-docs
-```
+`install.sh` 가 `~/.claude/skills/` 에 심링크를 건다. 저장소를 어디에 두든 상관없다 — 스크립트가 자기 위치를 기준으로 경로를 잡는다.
 
 ## 2. 의존성 설치
 

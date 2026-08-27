@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # thaw — 땡. 예약 시각까지 자고, haiku 프로브로 한도 해제를 확인한 뒤 세션을 헤드리스로 재개한다.
-# freeze.sh reserve 가 setsid nohup 으로 기동한다. 직접 부를 일은 캐치업(check) 정도.
+# freeze.sh reserve 가 node spawn(detached:true) 으로 기동한다. 직접 부를 일은 캐치업(check) 정도.
 set -uo pipefail
 
 JOB="${1:?usage: thaw.sh <job>}"
@@ -13,6 +13,23 @@ PROBE_MAX="${FREEZE_PROBE_MAX:-12}"              # 최대 재시도 횟수
 DIR="$STATE_ROOT/$JOB"
 RES="$DIR/reservation.json"
 [ -f "$RES" ] || { echo "reservation 없음: $RES"; exit 1; }
+
+# GNU/BSD 양립 — epoch → 사람이 읽는 포맷 (freeze.sh 의 fmt_epoch 와 같은 로직, 독립 프로세스라 중복 정의).
+if date -d @0 +%s >/dev/null 2>&1; then _DATE_GNU=1; else _DATE_GNU=0; fi
+fmt_epoch() { if [ "$_DATE_GNU" = 1 ]; then date -d "@$1" "$2"; else date -r "$1" "$2"; fi; }
+
+# sha256 hex — GNU coreutils 는 sha256sum, macOS/BSD 는 shasum -a 256, 둘 다 없으면
+# node crypto. freeze.sh 와 thaw.sh 가 반드시 같은 값을 내야 하므로(마커 경로를 서로
+# 맞춰 찾는다) 두 파일에 같은 폴백 순서를 둔다.
+sha256_hex() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "$1" | sha256sum | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then
+    printf '%s' "$1" | shasum -a 256 | cut -d' ' -f1
+  else
+    node -e 'console.log(require("crypto").createHash("sha256").update(process.argv[1]).digest("hex"))' -- "$1"
+  fi
+}
 
 field() { node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1]))[process.argv[2]] ?? "")' "$RES" "$1"; }
 set_status() {
@@ -48,7 +65,7 @@ MODE=$(field mode)
 #      간격으로 재사용하는 서로 무관한 예약들이 같은 초에 만들어져 신호와
 #      created_at 이 우연히 같은 값으로 뭉개지는 오판정이 실측됐다.
 DONE_MARK="$DIR/done"
-HANDOFF_MARK="$STATE_ROOT/done-by-handoff/$(printf '%s' "$HANDOFF" | sha256sum | cut -d' ' -f1)"
+HANDOFF_MARK="$STATE_ROOT/done-by-handoff/$(sha256_hex "$HANDOFF")"
 JOB_CREATED_AT=$(field created_at)
 [ -n "$JOB_CREATED_AT" ] || JOB_CREATED_AT=0   # 구버전 reservation 호환 — 항상 신호를 받아들인다
 
@@ -61,7 +78,7 @@ is_done_signaled() {
   [ "$sig_ts" -ge "$JOB_CREATED_AT" ]
 }
 
-echo "[$(date '+%F %T')] thaw 시작 — job=$JOB 땡=$(date -d "@$RESUME_AT" '+%F %T')"
+echo "[$(date '+%F %T')] thaw 시작 — job=$JOB 땡=$(fmt_epoch "$RESUME_AT" '+%F %T')"
 
 # 1) 예약 시각까지 대기 (60초 단위로 끊어 자며 취소·완료 여부 확인)
 # sleep 은 백그라운드 + wait 로 돌린다 — 포그라운드 sleep 은 bash 의 TERM 처리를 막아 kill 이 최대 60초 늦어진다.
@@ -134,7 +151,7 @@ if [ "$CHAIN" = "1" ] && [ "$CHAIN_LEFT" -gt 0 ]; then
   NEXT_CHAIN_LEFT=$((CHAIN_LEFT - 1))
   NEXT_JOB="${JOB}-c${NEXT_CHAIN_LEFT}"
   NEXT_AT=$((RESUME_AT + 5 * 3600))
-  echo "[$(date '+%F %T')] 다음 창 선무장: job=$NEXT_JOB (남은 체인 ${NEXT_CHAIN_LEFT}회) 땡=$(date -d "@$NEXT_AT" '+%F %T')"
+  echo "[$(date '+%F %T')] 다음 창 선무장: job=$NEXT_JOB (남은 체인 ${NEXT_CHAIN_LEFT}회) 땡=$(fmt_epoch "$NEXT_AT" '+%F %T')"
   if bash "$SCRIPT_DIR/freeze.sh" arm --cwd "$CWD" --handoff "$HANDOFF" --job "$NEXT_JOB" \
       --chain-left "$NEXT_CHAIN_LEFT" --permission-mode "$PERM" --mode "$MODE" \
       --at "$NEXT_AT" --pad "$PAD" --session "$SESSION" --created-at "$JOB_CREATED_AT" \

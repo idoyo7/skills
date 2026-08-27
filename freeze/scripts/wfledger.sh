@@ -153,9 +153,12 @@ cmd_run() {
   entry=$(printf -- '- runId: %s\n  script: %s\n  journal: %s' "$run_id" "$script" "$journal")
 
   local tmp; tmp=$(mktemp)
-  awk -v entry="$entry" '
+  # entry 는 여러 줄이다. awk -v 로 넘기면 BSD awk 가 "newline in string" 으로
+  # 거부한다(GNU awk 는 통과) — 환경변수로 넘기고 ENVIRON 으로 읽는다. ENVIRON 은
+  # POSIX awk 라 두 구현 모두 지원하고 값에 개행이 들어가도 문제없다.
+  WFLEDGER_ENTRY="$entry" awk '
     { print }
-    !done && $0 ~ /^## 워크플로우 런$/ { print entry; done=1 }
+    !done && $0 ~ /^## 워크플로우 런$/ { print ENVIRON["WFLEDGER_ENTRY"]; done=1 }
   ' "$ledger" > "$tmp"
 
   # 플레이스홀더 제거는 "## 워크플로우 런" 섹션 안, 그 첫 줄일 때만 한다 — 예전엔

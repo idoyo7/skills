@@ -8,6 +8,13 @@ PASS=0; FAIL=0
 ok()   { PASS=$((PASS+1)); echo "  ok: $1"; }
 fail() { FAIL=$((FAIL+1)); echo "  FAIL: $1"; }
 
+# 제자리 편집 — GNU sed 는 -i 에 인자가 없어야 하고 BSD sed 는 있어야 한다(BSD 는
+# 인자가 없으면 치환식을 백업 확장자로 먹고 다음 인자를 스크립트로 읽어 실패한다).
+# -i<확장자> 를 붙인 형태는 두 구현 모두 받으므로 그걸 쓰고 백업을 지운다.
+sedi() {  # sedi <sed 표현식> <파일>
+  sed -i.sedibak "$1" "$2" && rm -f "$2.sedibak"
+}
+
 # ---- 픽스처: 평서체 + 보호 구역이 섞인 문서 ----
 cat > "$TMP/a.md" <<'EOF'
 ---
@@ -41,7 +48,7 @@ EOF
 echo "== scan: 평서체 검출 =="
 OUT=$(node "$JD/scan.mjs" "$TMP/a.md")
 N=$(echo "$OUT" | grep -oE '평서체=[0-9]+' | head -1 | cut -d= -f2)
-[ "${N:-0}" -ge 6 ] && ok "산문 평서체 검출 ($N건)" || fail "검출 부족: $N"
+[ "${N:-0}" -ge 6 ] && ok "산문 평서체 검출 (${N}건)" || fail "검출 부족: $N"
 
 echo "== scan: 보호 구역은 세지 않는다 =="
 # 단어로 가드하면 같은 낱말이 보호 줄과 산문 줄에 동시에 있을 때 구분이 안 된다
@@ -86,7 +93,7 @@ node "$JD/scan.mjs" --broken-only "$TMP/b.md" | grep -q "파손 0건" && ok "잔
 
 echo "== verify: 정상 변환은 PASS =="
 cp "$TMP/a.md" "$TMP/a-orig.md"
-sed -i 's/본문은 평서체로 끝난다\./본문은 평서체로 끝납니다./' "$TMP/a.md"
+sedi 's/본문은 평서체로 끝난다\./본문은 평서체로 끝납니다./' "$TMP/a.md"
 node "$JD/verify.mjs" "$TMP/a-orig.md" "$TMP/a.md" | grep -q PASS && ok "종결어미만 변경 → PASS" || fail "정상 변환 오탐"
 
 echo "== verify: 위반 검출 =="
@@ -94,13 +101,13 @@ viol() { # $1=설명, $2=sed 표현식
   cp "$TMP/a-orig.md" "$TMP/v.md"; eval "$2"
   if node "$JD/verify.mjs" "$TMP/a-orig.md" "$TMP/v.md" > /dev/null 2>&1; then fail "$1 미검출"; else ok "$1"; fi
 }
-viol "코드블록 변경"   "sed -i 's/코드 안은 평서체다/코드 안은 평서체입니다/' \"\$TMP/v.md\""
-viol "헤딩 변경"       "sed -i 's/# 헤딩은 평서체다/# 헤딩은 평서체입니다/' \"\$TMP/v.md\""
-viol "표 행 변경"      "sed -i 's/| a | 값이다 |/| a | 값입니다 |/' \"\$TMP/v.md\""
-viol "URL 변경"        "sed -i 's|https://example.com/문서다|https://example.com/문서|' \"\$TMP/v.md\""
+viol "코드블록 변경"   "sedi 's/코드 안은 평서체다/코드 안은 평서체입니다/' \"\$TMP/v.md\""
+viol "헤딩 변경"       "sedi 's/# 헤딩은 평서체다/# 헤딩은 평서체입니다/' \"\$TMP/v.md\""
+viol "표 행 변경"      "sedi 's/| a | 값이다 |/| a | 값입니다 |/' \"\$TMP/v.md\""
+viol "URL 변경"        "sedi 's|https://example.com/문서다|https://example.com/문서|' \"\$TMP/v.md\""
 viol "줄 수 변경"      "echo '추가 줄입니다.' >> \"\$TMP/v.md\""
-viol "볼드 마커 변경"  "sed -i 's/본문은/**본문은**/' \"\$TMP/v.md\""
-viol "파손 유입"       "sed -i 's/본문은 평서체로 끝난다\./본문은 평서체로 필요하입니다./' \"\$TMP/v.md\""
+viol "볼드 마커 변경"  "sedi 's/본문은/**본문은**/' \"\$TMP/v.md\""
+viol "파손 유입"       "sedi 's/본문은 평서체로 끝난다\./본문은 평서체로 필요하입니다./' \"\$TMP/v.md\""
 
 echo
 echo "PASS=$PASS FAIL=$FAIL"

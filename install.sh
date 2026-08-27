@@ -5,6 +5,16 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# readlink -f 는 GNU 확장이라 구형 macOS/BSD readlink 가 거부한다. 이 저장소는
+# 이미 node 에 전면 의존하므로(스크립트 전반이 JSON 처리를 node 로 한다) node 로 폴백한다.
+resolve_path() {
+  if readlink -f / >/dev/null 2>&1; then
+    readlink -f "$1"
+  else
+    node -e 'console.log(require("fs").realpathSync(process.argv[1]))' -- "$1" 2>/dev/null || printf '%s' "$1"
+  fi
+}
 SKILLS_DIR="$HOME/.claude/skills"
 mkdir -p "$SKILLS_DIR"
 
@@ -24,7 +34,7 @@ for skill_md in "$REPO_DIR"/*/SKILL.md; do
   dest="$SKILLS_DIR/$name"
 
   if [ -L "$dest" ]; then
-    current="$(readlink -f "$dest")"
+    current="$(resolve_path "$dest")"
     if [ "$current" = "$src" ]; then
       echo "ok:   $name (이미 연결됨)"
     else
@@ -83,7 +93,7 @@ for hook_conf in "$REPO_DIR"/hooks/*/hook.conf; do
 
   # 2-a. 심링크 설치
   if [ -L "$HOOK_DEST" ]; then
-    current_target="$(readlink -f "$HOOK_DEST")"
+    current_target="$(resolve_path "$HOOK_DEST")"
     if [ "$current_target" = "$HOOK_SRC" ]; then
       echo "ok:   $ENTRY (심링크 이미 올바름)"
     else

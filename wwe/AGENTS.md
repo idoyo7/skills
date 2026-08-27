@@ -25,13 +25,12 @@ humanize-docs는 실행 파일이 아니라 Claude Code가 읽는 스킬이다. 
 대상 경로에 이미 저장소가 있으면 clone 대신 pull로 갱신한다.
 
 ```bash
-# 사용자 레벨, 신규 설치
-git clone https://github.com/idoyo7/humanize-docs.git ~/.claude/skills/humanize-docs
+# 신규 설치 — 클론 위치는 자유, install.sh 가 심링크를 건다
+git clone https://github.com/idoyo7/skills.git ~/src/skills
+cd ~/src/skills && bash install.sh
 
 # 이미 존재하면 갱신
-git -C ~/.claude/skills/humanize-docs pull
-
-# 프로젝트 레벨은 경로만 <프로젝트>/.claude/skills/humanize-docs로 바꾼다
+git -C <저장소> pull && bash <저장소>/install.sh
 ```
 
 ## 의존성 확인

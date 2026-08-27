@@ -68,13 +68,15 @@ Claude Code Stop 훅. 마지막 assistant 메시지가 한국어 산문이면 �
 
 ## 시드 파일 경로
 
-훅은 아래 순서로 시드 파일을 찾는다(심링크 resolve 기준).
+훅은 아래 순서로 시드 파일을 찾는다.
 
-1. `hooks/reply-check/../../wwe/references/author-tics.txt` (저장소 내)
-2. `~/evejuni/skills/wwe/references/author-tics.txt`
-3. `~/.claude/skills/wwe/references/author-tics.txt`
+1. 환경변수 `REPLY_CHECK_AUTHOR_TICS` 가 가리키는 경로
+2. `hooks/reply-check/../../wwe/references/author-tics.txt` (저장소 내)
+3. `$CLAUDE_CONFIG_DIR/skills/wwe/references/author-tics.txt` (미설정이면 `~/.claude`)
 
-`author_repeat.py`도 같은 방식으로 `wwe/scripts/` 아래를 먼저 찾는다.
+2번이 기준선이다. `__file__` 을 `resolve()` 한 값으로 잡으므로 `~/.claude/hooks/` 에 심링크로 설치돼 있어도 저장소 실제 위치를 찾는다 — 저장소를 어디에 클론해도 맞는다.
+
+`author_repeat.py` 도 같은 방식이고 환경변수는 `REPLY_CHECK_AUTHOR_REPEAT` 다. `metrics_v2.py` 는 `REPLY_CHECK_METRICS_V2` 로 지정할 수 있고, 미지정이면 플러그인의 `marketplaces/` 와 `cache/<버전>/` 양쪽을 훑는다.
 
 ## 끄는 법
 
@@ -85,7 +87,7 @@ Claude Code Stop 훅. 마지막 assistant 메시지가 한국어 산문이면 �
 저장소 루트에서 `install.sh`를 실행하면 심링크와 settings.json 등록을 자동으로 처리한다.
 
 ```bash
-cd ~/evejuni/skills
+cd <저장소 루트>
 bash install.sh
 ```
 

@@ -20,17 +20,14 @@ Claude Code와 humanize-korean 플러그인이 필요하다.
 
 ## 설치
 
-사용자 레벨(모든 프로젝트에서 쓸 때):
+이 스킬은 `idoyo7/skills` 저장소의 `wwe/` 에 있다(예전 표준 저장소 `idoyo7/humanize-docs` 는 여기로 합쳐졌다).
 
 ```bash
-git clone https://github.com/idoyo7/humanize-docs ~/.claude/skills/humanize-docs
+git clone https://github.com/idoyo7/skills.git ~/src/skills
+cd ~/src/skills && bash install.sh
 ```
 
-프로젝트 레벨(이 프로젝트에서만 쓸 때):
-
-```bash
-git clone https://github.com/idoyo7/humanize-docs <project>/.claude/skills/humanize-docs
-```
+`install.sh` 가 `~/.claude/skills/` 에 심링크를 건다. 저장소를 어디에 두든 상관없다 — 스크립트가 자기 위치를 기준으로 경로를 잡는다.
 
 ## 사용법
 

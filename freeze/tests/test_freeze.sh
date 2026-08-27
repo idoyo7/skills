@@ -36,7 +36,8 @@ SLUG=$(echo "$FAKE_CWD" | sed 's/[^A-Za-z0-9-]/-/g')
 PROJ="$CLAUDE_PROJECTS_DIR/$SLUG"
 mkdir -p "$PROJ"
 
-iso() { date -u -d "@$1" '+%Y-%m-%dT%H:%M:%S.000Z'; }
+# GNU/BSD 양립 — date -u -d 대신 node 로. toISOString() 이 정확히 같은 포맷(....000Z)을 낸다.
+iso() { node -e 'console.log(new Date(Number(process.argv[1])*1000).toISOString())' "$1"; }
 NOW=$(date +%s)
 START=$(( NOW - 2*3600 ))   # 2시간 전 시작 → 땡 = floor_hour(START)+5h
 SESSION="11111111-2222-3333-4444-555555555555"

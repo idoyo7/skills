@@ -26,8 +26,19 @@ from pathlib import Path
 _SELF_DIR = Path(__file__).resolve().parent
 
 
-def _find_path(relative_from_self: str, *fallbacks: Path) -> Path:
-    """심링크 resolve 기준 경로를 먼저 시도하고, 없으면 fallback 순서로 반환한다."""
+def _find_path(env_var: str, relative_from_self: str, *fallbacks: Path) -> Path:
+    """환경변수 → 저장소 상대경로 → fallback 순으로 찾는다.
+
+    개인 홈 경로를 코드에 박지 않으려고 이 순서로 둔다. _SELF_DIR 은 __file__ 을
+    resolve() 한 값이라 ~/.claude/hooks/ 에 심링크로 설치돼 있어도 저장소 실제
+    위치를 가리킨다 — 저장소를 어디에 clone 해도 상대경로가 맞는다. 그래서 홈
+    아래 특정 디렉터리 이름을 가정할 필요가 없다.
+    """
+    override = os.environ.get(env_var, "").strip()
+    if override:
+        candidate = Path(override).expanduser()
+        if candidate.exists():
+            return candidate
     primary = (_SELF_DIR / relative_from_self).resolve()
     if primary.exists():
         return primary
@@ -37,23 +48,56 @@ def _find_path(relative_from_self: str, *fallbacks: Path) -> Path:
     return primary  # 없어도 primary 반환 (호출 시 exists() 확인)
 
 
-_METRICS_V2_PATH = (
-    Path.home()
-    / ".claude/plugins/marketplaces/im-not-ai/.claude/skills/humanize-korean/references/metrics_v2.py"
-)
+def _claude_config_dir() -> Path:
+    """Claude Code 설정 디렉터리. CLAUDE_CONFIG_DIR 을 존중한다(기본 ~/.claude)."""
+    env = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+    return Path(env).expanduser() if env else Path.home() / ".claude"
+
+
+def _find_metrics_v2() -> Path:
+    """humanize-korean 플러그인의 metrics_v2.py 를 찾는다.
+
+    플러그인은 marketplaces/ 아래에도, cache/<버전>/ 아래에도 설치된다
+    (wwe/scripts/scan_docs.py 가 보는 두 경로와 같다). 한쪽만 보면 설치 방식이
+    다른 환경에서 조용히 내장 정규식으로 떨어지므로 둘 다 훑는다.
+    """
+    override = os.environ.get("REPLY_CHECK_METRICS_V2", "").strip()
+    if override:
+        candidate = Path(override).expanduser()
+        if candidate.exists():
+            return candidate
+    rel = "references/metrics_v2.py"
+    cfg = _claude_config_dir()
+    marketplace = (
+        cfg / "plugins/marketplaces/im-not-ai/.claude/skills/humanize-korean" / rel
+    )
+    if marketplace.exists():
+        return marketplace
+    cache_root = cfg / "plugins/cache/im-not-ai/humanize-korean"
+    if cache_root.is_dir():
+        # 버전 디렉터리가 여럿이면 최신(사전순 역순)부터 본다 — SKILL.md 의 sort -V | tail -1 과 같은 의도.
+        for version_dir in sorted(cache_root.iterdir(), reverse=True):
+            candidate = version_dir / rel
+            if candidate.exists():
+                return candidate
+    return marketplace  # 없어도 대표 경로 반환 (호출 시 exists() 확인)
+
+
+_METRICS_V2_PATH = _find_metrics_v2()
 
 _AUTHOR_TICS_PATH = _find_path(
+    "REPLY_CHECK_AUTHOR_TICS",
     "../../wwe/references/author-tics.txt",
-    Path.home() / "evejuni/skills/wwe/references/author-tics.txt",
-    Path.home() / ".claude/skills/wwe/references/author-tics.txt",
+    _claude_config_dir() / "skills/wwe/references/author-tics.txt",
 )
 
 _AUTHOR_REPEAT_PATH = _find_path(
+    "REPLY_CHECK_AUTHOR_REPEAT",
     "../../wwe/scripts/author_repeat.py",
-    Path.home() / "evejuni/skills/wwe/scripts/author_repeat.py",
+    _claude_config_dir() / "skills/wwe/scripts/author_repeat.py",
 )
 
-_LOG_PATH = Path.home() / ".claude/hooks/logs/reply-check.jsonl"
+_LOG_PATH = _claude_config_dir() / "hooks/logs/reply-check.jsonl"
 
 # ---------------------------------------------------------------------------
 # helpers

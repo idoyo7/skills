@@ -43,6 +43,6 @@ Claude Code PreToolUse 훅. `Workflow` 툴을 실제로 실행하려는 호출�
 저장소 루트에서 `install.sh`를 실행하면 다른 훅들과 함께 심링크와 `settings.json` 등록을 자동으로 처리한다.
 
 ```bash
-cd ~/evejuni/skills
+cd <저장소 루트>
 bash install.sh
 ```
