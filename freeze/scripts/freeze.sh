@@ -7,15 +7,57 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE_ROOT="${FREEZE_STATE_DIR:-$HOME/.local/state/freeze}"
 PROJECTS_DIR="${CLAUDE_PROJECTS_DIR:-$HOME/.claude/projects}"
 
+# GNU/BSD 양립 — epoch → 사람이 읽는 포맷. BSD 는 `date -r <epoch>`, GNU 는 `date -d @<epoch>`.
+# (GNU 의 `-r` 은 "파일 mtime" 이라 의미가 달라 반드시 분기해야 한다.)
+if date -d @0 +%s >/dev/null 2>&1; then _DATE_GNU=1; else _DATE_GNU=0; fi
+fmt_epoch() {  # fmt_epoch <epoch> <+strftime>
+  if [ "$_DATE_GNU" = 1 ]; then date -d "@$1" "$2"; else date -r "$1" "$2"; fi
+}
+
 # handoff 경로를 절대 realpath 로 정규화한다. reserve/arm/done 모두 이 정규화를
 # 거쳐 저장·비교하므로, SKILL.md 가 안내하는 상대경로 예약과 절대경로 done 호출이
 # 문자열만 달라 서로 못 알아보는 사고를 막는다(major 2). -m 은 대상이 아직 없거나
 # 이미 지워졌어도 정규화된 경로를 낸다 — done 이 그런 handoff 도 "대상 없음"으로
 # 안전하게 판정할 수 있게.
-normalize_handoff() { realpath -m -- "$1"; }
+# realpath 의 -m 은 GNU 확장이라 BSD/macOS realpath 가 거부한다(illegal option -- m).
+# 존재하지 않는 경로도 정규화해야 하므로(위 주석) 존재하는 최장 접두부만 realpathSync
+# 로 심링크를 풀고 남은 조각을 다시 붙여 -m 과 같은 결과를 낸다.
+normalize_handoff() {
+  node -e '
+const fs = require("fs"), path = require("path");
+const abs = path.resolve(process.argv[1]);
+let p = abs;
+const rest = [];
+for (;;) {
+  try {
+    const real = fs.realpathSync(p);
+    console.log(rest.length ? path.join(real, ...rest.slice().reverse()) : real);
+    break;
+  } catch {
+    const parent = path.dirname(p);
+    if (parent === p) { console.log(abs); break; }   // 루트까지 못 찾음 — resolve 결과로 만족
+    rest.push(path.basename(p));
+    p = parent;
+  }
+}
+' -- "$1"
+}
 
 # handoff 경로 하나를 하나의 파일명으로 접는다 — done-by-handoff 마커 경로에 쓴다.
-handoff_hash() { printf '%s' "$1" | sha256sum | cut -d' ' -f1; }
+# sha256 hex — GNU coreutils 는 sha256sum, macOS/BSD 는 shasum -a 256, 둘 다 없으면
+# node crypto. freeze.sh 와 thaw.sh 가 반드시 같은 값을 내야 하므로(마커 경로를 서로
+# 맞춰 찾는다) 두 파일에 같은 폴백 순서를 둔다.
+sha256_hex() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "$1" | sha256sum | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then
+    printf '%s' "$1" | shasum -a 256 | cut -d' ' -f1
+  else
+    node -e 'console.log(require("crypto").createHash("sha256").update(process.argv[1]).digest("hex"))' -- "$1"
+  fi
+}
+
+handoff_hash() { sha256_hex "$1"; }
 
 usage() {
   cat <<'EOF'
@@ -158,12 +200,25 @@ resolve_at() {
       pad="${pad_given:-0}"
       ;;
     [0-9][0-9]:[0-9][0-9])
-      epoch=$(date -d "$at" +%s)
-      [ "$epoch" -le "$(date +%s)" ] && epoch=$(date -d "tomorrow $at" +%s)  # 이미 지난 시각이면 내일
+      # GNU/BSD 양립 — date -d 대신 node 로 파싱. 오늘 그 시각, 이미 지났으면 다음 날(setDate 로 넘겨 DST 안전).
+      epoch=$(node -e '
+const [hhmm] = process.argv.slice(1);
+const [h, m] = hhmm.split(":").map(Number);
+if (h > 23 || m > 59) process.exit(1);   // setHours 는 99:99 를 조용히 롤오버하므로 직접 거른다
+const d = new Date();
+d.setHours(h, m, 0, 0);
+if (d.getTime() <= Date.now()) d.setDate(d.getDate() + 1);
+console.log(Math.floor(d.getTime() / 1000));
+' -- "$at") || { echo "ERROR: 시각 해석 실패: $at" >&2; return 1; }
       pad="${pad_given:-0}"
       ;;
     ''|*[!0-9]*)
-      epoch=$(date -d "$at" +%s) || { echo "ERROR: 시각 해석 실패: $at" >&2; return 1; }
+      # GNU/BSD 양립 — date -d 대신 node Date.parse 로 임의 문자열/ISO8601 파싱.
+      epoch=$(node -e '
+const t = Date.parse(process.argv[1]);
+if (!Number.isFinite(t)) process.exit(1);
+console.log(Math.floor(t / 1000));
+' -- "$at") || { echo "ERROR: 시각 해석 실패: $at" >&2; return 1; }
       pad="${pad_given:-0}"
       ;;
     *)
@@ -171,6 +226,14 @@ resolve_at() {
       pad="${pad_given:-0}"
       ;;
   esac
+  # 해석 결과 sanity 검사 — 파싱 사고로 엉뚱한 epoch 가 예약에 박히는 것을 막는다.
+  # (Date.parse("-5") → 2001년, 숫자 오타 "5" → 1970년. 둘 다 조용히 통과하면 thaw 가 즉시 깨거나 영원히 잔다.)
+  case "$epoch" in ''|*[!0-9]*) echo "ERROR: 시각 해석 실패: $at" >&2; return 1;; esac
+  local now; now=$(date +%s)
+  if [ "$epoch" -lt $(( now - 300 )) ] || [ "$epoch" -gt $(( now + 30*86400 )) ]; then
+    echo "ERROR: 땡 시각이 비정상 — $at → $(fmt_epoch "$epoch" '+%F %T'). 지금부터 30일 이내여야 한다" >&2
+    return 1
+  fi
   echo "$(( epoch + pad )) $pad"
 }
 
@@ -183,6 +246,22 @@ detect_session() {
   local latest; latest=$(ls -t "$dir"/*.jsonl 2>/dev/null | head -1)
   [ -n "$latest" ] || { echo "ERROR: transcript 없음: $dir" >&2; return 1; }
   basename "$latest" .jsonl
+}
+
+# setsid 대체 — node child_process.spawn 의 detached:true 가 POSIX 에서 setsid(2) 를 호출해
+# 세션을 분리한다. macOS 에는 setsid 커맨드가 없어 이 방식으로 통일 (양 플랫폼 공통, PID 도 정확).
+# thaw.sh 를 bash 로 명시 실행 — 실행 권한(+x)에 의존하지 않는다.
+spawn_sleeper() {  # spawn_sleeper <job> <dir>
+  local job="$1" dir="$2"
+  node -e '
+const { spawn } = require("child_process");
+const fs = require("fs");
+const [script, job, log] = process.argv.slice(1);
+const out = fs.openSync(log, "a");
+const child = spawn("bash", [script, job], { detached: true, stdio: ["ignore", out, out] });
+child.unref();
+console.log(child.pid);
+' "$SCRIPT_DIR/thaw.sh" "$job" "$dir/thaw.log" > "$dir/sleeper.pid"
 }
 
 cmd_reserve() {
@@ -253,9 +332,8 @@ require("fs").writeFileSync(p, JSON.stringify({
 }, null, 2));
 ' "$dir/reservation.json" "$job" "$session" "$cwd" "$handoff" "$epoch" "$perm" "$mode" "$effective_pad" "$created_at"
 
-  setsid nohup "$SCRIPT_DIR/thaw.sh" "$job" >> "$dir/thaw.log" 2>&1 < /dev/null &
-  echo $! > "$dir/sleeper.pid"
-  echo "얼음 — job=$job session=${session:-(미탐지)} mode=$mode 땡=$(date -d "@$epoch" '+%m/%d %H:%M') ($(( (epoch - $(date +%s)) / 60 ))분 후)"
+  spawn_sleeper "$job" "$dir"
+  echo "얼음 — job=$job session=${session:-(미탐지)} mode=$mode 땡=$(fmt_epoch "$epoch" '+%m/%d %H:%M') ($(( (epoch - $(date +%s)) / 60 ))분 후)"
 }
 
 job_field() { node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1]))[process.argv[2]] ?? "")' "$1" "$2"; }
@@ -300,7 +378,7 @@ cmd_status() {
     job=$(job_field "$r" job); status=$(job_field "$r" status); epoch=$(job_field "$r" resume_at)
     pid=$(cat "$(dirname "$r")/sleeper.pid" 2>/dev/null || true)
     pid_alive "$pid" && alive="alive"
-    printf '%-24s %-8s 땡=%s sleeper=%s\n' "$job" "$status" "$(date -d "@$epoch" '+%m/%d %H:%M')" "$alive"
+    printf '%-24s %-8s 땡=%s sleeper=%s\n' "$job" "$status" "$(fmt_epoch "$epoch" '+%m/%d %H:%M')" "$alive"
     warn=$(job_field "$r" chain_warning)
     [ -n "$warn" ] && printf '  경고: %s\n' "$warn"
   done
@@ -331,8 +409,7 @@ cmd_check() {
     pid=$(cat "$dir/sleeper.pid" 2>/dev/null || true)
     if [ "$now" -ge "$epoch" ] && ! pid_alive "$pid"; then
       echo "캐치업 실행: $(job_field "$r" job)"
-      setsid nohup "$SCRIPT_DIR/thaw.sh" "$(job_field "$r" job)" >> "$dir/thaw.log" 2>&1 < /dev/null &
-      echo $! > "$dir/sleeper.pid"
+      spawn_sleeper "$(job_field "$r" job)" "$dir"
     fi
   done
 }
@@ -371,8 +448,11 @@ cmd_arm() {
   [ -n "$pad" ] && extra+=(--pad "$pad")
   [ -n "$session" ] && extra+=(--session "$session")
   [ -n "$created_at" ] && extra+=(--created-at "$created_at")
+  # macOS 기본 bash 는 3.2 — set -u 아래서 빈 배열의 "${extra[@]}" 를 unbound variable 로
+  # 터뜨린다(bash 4.4 에서 고쳐진 동작). arm 을 --pad/--session/--created-at 없이 부르면
+  # extra 가 비므로 항상 이 경로를 탄다. ${arr[@]+...} 로 "비었으면 아무것도 전개 안 함"을 명시한다.
   cmd_reserve --at "$at" --cwd "$cwd" --handoff "$handoff" --permission-mode "$perm" \
-    --job "$job" --mode "$mode" "${extra[@]}" || return 1
+    --job "$job" --mode "$mode" ${extra[@]+"${extra[@]}"} || return 1
   # 방금 만든 예약(자기 job 이름으로 확정된 경로)에만 체인 정보를 심는다
   local res="$STATE_ROOT/$job/reservation.json"
   node -e '
