@@ -5,6 +5,8 @@
 # 원장 크기를 작업 규모와 무관하게 10k 토큰 이하로 묶어둔다.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/_node.sh"
 PROJECTS_DIR="${CLAUDE_PROJECTS_DIR:-$HOME/.claude/projects}"
 
 usage() {

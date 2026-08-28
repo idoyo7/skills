@@ -4,6 +4,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$HERE/../scripts/_node.sh"
 FZ="$HERE/../scripts/freeze.sh"
 WFL="$HERE/../scripts/wfledger.sh"
 TMP=$(mktemp -d)
@@ -21,9 +22,10 @@ cleanup() {
   rm -rf "$TMP"
 }
 trap cleanup EXIT
-PASS=0; FAIL=0
+PASS=0; FAIL=0; SKIP=0
 ok()   { PASS=$((PASS+1)); echo "  ok: $1"; }
 fail() { FAIL=$((FAIL+1)); echo "  FAIL: $1"; }
+skip() { SKIP=$((SKIP+1)); echo "  skip: $1"; }
 
 export FREEZE_STATE_DIR="$TMP/state"
 export CLAUDE_PROJECTS_DIR="$TMP/projects"
@@ -639,6 +641,108 @@ NEWDIR="$CLAUDE_PROJECTS_DIR/$SLUG2/$NEWSESSION/subagents/workflows/$RUNID"
 bash "$WFL" link --ledger "$LPATH" --run-id "$RUNID" --session "$NEWSESSION" | grep -q "이미 존재" && ok "재호출은 idempotent" || fail "재호출 동작 이상"
 bash "$WFL" link --ledger "$LPATH" --run-id "wf_missing" --session "$NEWSESSION" > /dev/null 2>&1 && fail "존재하지 않는 run 인데 성공함" || ok "원본 없으면 실패 코드로 폴백 신호"
 
+echo "== _node.sh: node 탐색 폴백 =="
+
+echo "== _node.sh: FREEZE_NODE_BIN 존중 (테스트 1) =="
+NODE_WRAP_LOG="$TMP/node-wrap.log"
+NODE_WRAP="$TMP/node-wrap.sh"
+# $FREEZE_NODE_BIN 을 쓴다(command -v node 대신) — 이 테스트 스크립트 자체가 위에서
+# _node.sh 를 이미 source 했으므로 여기선 node 가 함수로 가려져 있어 command -v 는
+# 실행파일 경로가 아니라 함수 이름("node")을 돌려준다. $FREEZE_NODE_BIN 은 _node.sh
+# 가 탐색해서 export 해둔 실제 절대경로다.
+REAL_NODE="$FREEZE_NODE_BIN"
+cat > "$NODE_WRAP" <<WRAPEOF
+#!/usr/bin/env bash
+echo "called \$@" >> "$NODE_WRAP_LOG"
+exec "$REAL_NODE" "\$@"
+WRAPEOF
+chmod +x "$NODE_WRAP"
+WRAP_OUT=$(FREEZE_NODE_BIN="$NODE_WRAP" bash "$FZ" estimate 2>&1) || true
+[ -f "$NODE_WRAP_LOG" ] && ok "estimate 실행 중 FREEZE_NODE_BIN 래퍼가 호출됨" || fail "래퍼 미호출: $WRAP_OUT ($(cat "$NODE_WRAP_LOG" 2>/dev/null))"
+
+echo "== _node.sh: PATH 에 node 없어도 동작 (테스트 2) =="
+NODE_DIR=$(dirname "$FREEZE_NODE_BIN")
+STRIPPED=$(printf '%s' "$PATH" | tr ':' '\n' | grep -vx "$NODE_DIR" | paste -sd: -)
+# 서브셸 + unset -f 로 확인한다 — 이 프로세스엔 이미 _node.sh 가 정의한 node() 함수가
+# 있어서, 그냥 command -v node 를 쓰면 PATH 와 무관하게 함수 이름을 찾아내 버린다.
+if (unset -f node; PATH="$STRIPPED" command -v node >/dev/null 2>&1); then
+  skip "PATH 에서 node 디렉토리($NODE_DIR)를 빼도 다른 위치의 node 가 여전히 잡힘 — 이 환경에선 재현 불가"
+else
+  # set -e 아래에서 대입만 있는 명령이 실패하면(예: 이전엔 STRIPPED_OUT=$(...) 다음 줄에서
+  # $? 를 읽는 방식) 그 줄에 닿기도 전에 스위트 전체가 죽는다. &&/|| 로 감싸 대입 자체의
+  # 실패가 errexit 를 트리거하지 않게 한다(라인 241 의 NO_TARGET_RC 와 같은 패턴).
+  STRIPPED_OUT=$(env -u FREEZE_NODE_BIN PATH="$STRIPPED" bash "$FZ" estimate 2>&1) && STRIPPED_RC=0 || STRIPPED_RC=$?
+  [ "$STRIPPED_RC" = 0 ] && ok "stripped PATH 에서도 freeze.sh estimate 가 rc=0 으로 완주" || fail "stripped PATH estimate 실패 rc=$STRIPPED_RC: $STRIPPED_OUT"
+
+  echo "== _node.sh: 슬리퍼가 node 를 물려받는다 (테스트 3, 핵심 회귀) =="
+  # "완주(status=done)" 만으론 export 가 load-bearing 인지 증명 못 한다 — 후보 3/4/5
+  # (/opt/homebrew, /usr/local, nvm 글롭)는 절대경로라 PATH 를 지워도 자식이 자력으로
+  # node 를 되찾을 수 있어서다(예: 이 개발기의 nvm). export 를 지운 변이 코드로도
+  # 그 경로면 완주해버려 이빨 없는 단언이 된다. 그래서 PATH 뿐 아니라 후보 3/4/5 어디에도
+  # 안 걸리는 전용 래퍼를 FREEZE_NODE_BIN 으로 지정하고, thaw.sh 가 그 래퍼를 실제로
+  # 물려받아 썼는지를 래퍼 호출 로그로 직접 확인한다.
+  export FREEZE_CLAUDE_BIN="$MOCK"
+  NODE_WRAP3_LOG="$TMP/node-wrap3.log"
+  NODE_WRAP3="$TMP/node-wrap3.sh"
+  cat > "$NODE_WRAP3" <<WRAP3EOF
+#!/usr/bin/env bash
+echo "called \$@" >> "$NODE_WRAP3_LOG"
+exec "$REAL_NODE" "\$@"
+WRAP3EOF
+  chmod +x "$NODE_WRAP3"
+  SLEEPER_HANDOFF="$FAKE_CWD/sleeper-handoff.md"; echo "# sleeper handoff" > "$SLEEPER_HANDOFF"
+  SLEEPER_OUT=$(FREEZE_NODE_BIN="$NODE_WRAP3" PATH="$STRIPPED" bash "$FZ" reserve --at +2s --pad 0 --cwd "$FAKE_CWD" --handoff "$SLEEPER_HANDOFF" --job stripjob)
+  echo "$SLEEPER_OUT" | grep -q "job=stripjob" && ok "stripped PATH 로도 reserve 등록" || fail "stripped PATH reserve 실패: $SLEEPER_OUT"
+  STRIP_STATUS=""
+  for i in $(seq 1 20); do
+    STRIP_STATUS=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$FREEZE_STATE_DIR/stripjob/reservation.json')).status)")
+    [ "$STRIP_STATUS" = "done" ] && break
+    sleep 1
+  done
+  [ "$STRIP_STATUS" = "done" ] && ok "stripped PATH 로 뜬 슬리퍼가 완주 (status=done)" || fail "슬리퍼가 완주 못 함: status=$STRIP_STATUS"
+  # 핵심 단언: thaw.sh 전용 필드(permission_mode — freeze.sh 의 job_field() 는 안 읽는다)
+  # 를 읽는 field() 호출이 래퍼 로그에 실제로 찍혔는지. thaw.sh 의 field() 는
+  # `node -e '<한 줄 스크립트>' "$RES" "permission_mode"` 형태라 로그 한 줄에
+  # reservation.json 경로 바로 뒤에 "permission_mode" 가 붙어 나온다 — 이 인접 패턴을
+  # 고정 문자열로 찾는다. (freeze.sh 의 reserve 기록 호출도 스크립트 본문에
+  # "permission_mode" 라는 글자는 들어있지만, 그 -e 스크립트는 여러 줄이라 로그에서
+  # 줄이 갈리고 reservation.json 경로는 그 스크립트 뒤에 별도 인자로 나와 절대 같은
+  # 줄에서 바로 붙어 나오지 않는다 — 인접 검사라 오탐이 안 난다.)
+  grep -qF -- "$FREEZE_STATE_DIR/stripjob/reservation.json permission_mode" "$NODE_WRAP3_LOG" \
+    && ok "thaw.sh 의 field() 호출이 실제로 FREEZE_NODE_BIN 래퍼를 거쳐감 (export 전파 확인, 변이 테스트로 검증됨)" \
+    || fail "래퍼 로그에 thaw.sh 호출(permission_mode 필드 읽기)이 없음 — export 없이도 통과할 수 있는 이빨 없는 테스트: $(cat "$NODE_WRAP3_LOG" 2>/dev/null)"
+
+  # 위 완주(status=done) + 래퍼 로그 검사는 사실 "export FREEZE_NODE_BIN" 한 줄이 빠져도
+  # 못 잡는다(변이 테스트로 실측·재확인함) — 이 코드베이스는 PATH/파일시스템이 부모
+  # freeze.sh 부터 자식 thaw.sh 까지 어디서도 바뀌지 않아서, export 없이 thaw.sh 에
+  # FREEZE_NODE_BIN 이 안 물려가도 thaw.sh 가 자기 _node.sh 소싱에서 candidate 2(PATH)로
+  # 부모와 완전히 같은 값을 "독립적으로" 다시 찾아버린다 — FREEZE_NODE_BIN="$NODE_WRAP3"
+  # PATH="$STRIPPED" 로 넘겨도 그 값은 이미 bash 의 임시 환경 할당(`VAR=val cmd`)으로
+  # freeze.sh 프로세스 시작 시점부터 이미 exported 상태라, _node.sh 내부의 재-export 유무와
+  # 무관하게 자식·손자 프로세스까지 그대로 전파된다(3단 중첩 bash -c 로 직접 검증함).
+  # 그래서 이 mutation 을 잡으려면 E2E 완주 여부가 아니라 "_node.sh 를 소싱한 뒤
+  # FREEZE_NODE_BIN 이 실제로 그 프로세스의 env 에 노출되는가" 를 직접 봐야 한다 —
+  # candidate 2~5 로 새로 발견한 값은 원래 로컬 셸 변수라, export 없이는 자식이 볼 수 있는
+  # 어떤 채널(env)에도 안 실린다.
+  EXPORT_CHECK=$(env -u FREEZE_NODE_BIN bash -c "source '$HERE/../scripts/_node.sh'; env | grep -q '^FREEZE_NODE_BIN=' && echo EXPORTED || echo NOT_EXPORTED")
+  [ "$EXPORT_CHECK" = "EXPORTED" ] && ok "_node.sh 소싱 직후 FREEZE_NODE_BIN 이 실제로 export 됨 (env 에 노출 — 핵심 회귀 지점)" || fail "FREEZE_NODE_BIN 이 export 안 됨 — thaw.sh 가 물려받지 못한다: $EXPORT_CHECK"
+fi
+
+echo "== _node.sh: 못 찾으면 명확히 실패 (테스트 4) =="
+EMPTY_PATH_DIR="$TMP/emptybin"
+mkdir -p "$EMPTY_PATH_DIR"
+BASH_ABS="$(command -v bash)"   # env -i 로 PATH 를 비우면 "bash" 자체를 못 찾으므로 절대경로로 부른다
+if env -i HOME="$TMP/no-such-home" FREEZE_NODE_BIN="" PATH="$EMPTY_PATH_DIR" "$BASH_ABS" -c "source '$HERE/../scripts/_node.sh'" >"$TMP/nonode.out" 2>"$TMP/nonode.err"; then
+  NONODE_RC=0
+else
+  NONODE_RC=$?
+fi
+if [ "$NONODE_RC" != 0 ] && grep -q "node 를 찾지 못했다" "$TMP/nonode.err"; then
+  ok "node 없는 환경에서 _node.sh source 가 명확한 에러 + 비영 종료코드로 실패"
+else
+  skip "이 머신엔 /opt/homebrew, /usr/local, nvm 후보 중 실제로 잡히는 node 가 있어 탐색이 성공함 (rc=$NONODE_RC): $(cat "$TMP/nonode.err")"
+fi
+
 echo
-echo "PASS=$PASS FAIL=$FAIL"
+echo "PASS=$PASS FAIL=$FAIL SKIP=$SKIP"
 [ "$FAIL" = 0 ]
