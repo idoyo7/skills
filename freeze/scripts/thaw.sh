@@ -5,6 +5,7 @@ set -uo pipefail
 
 JOB="${1:?usage: thaw.sh <job>}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/_node.sh"
 STATE_ROOT="${FREEZE_STATE_DIR:-$HOME/.local/state/freeze}"
 CLAUDE_BIN="${FREEZE_CLAUDE_BIN:-$HOME/.local/bin/claude}"
 PROBE_INTERVAL="${FREEZE_PROBE_INTERVAL:-900}"   # 한도 미해제 시 재시도 간격(초)
