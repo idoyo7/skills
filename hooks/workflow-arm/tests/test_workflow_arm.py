@@ -14,6 +14,8 @@
    여전히 통과하되(세션당 한 번 계약 유지), 마커에 "예약 없이 통과됨"을 남긴다
 10. 9번이 남긴 마커가 있으면, 같은 cwd의 새 세션 첫 deny 사유에 경고가 붙는다
 11. deny 사유에 --at HH:MM 대안과 FREEZE_HOOK_OFF 킬스위치 안내가 들어있다
+12. deny 사유 4)에 완료 신호(freeze.sh done --handoff) 안내가 있고, 그 handoff
+    경로가 2)의 --handoff 경로와 동일하다 (안 맞으면 예약을 못 해제한다)
 """
 import importlib.util
 import io
@@ -487,6 +489,29 @@ class TestWorkflowArm(unittest.TestCase):
         reason = _mod._build_reason("/repo")
         self.assertIn("--at HH:MM", reason)
         self.assertIn("FREEZE_HOOK_OFF=1", reason)
+
+    # ── 완료 신호 누락 회귀: 1)~3)만 안내하면 예약을 건 세션이 끝나도 해제가
+    # 안 남아, 리셋 시각에 이미 끝난 작업이 헤드리스로 다시 열린다. 4)가
+    # freeze.sh done을 안내하는지, 그 handoff 경로가 2)의 --handoff와
+    # 실제로 같은 문자열인지(다르면 done이 대상을 못 찾는다)를 확인한다.
+    def test_deny_reason_mentions_done_with_matching_handoff(self):
+        cwd = "/repo"
+        reason = _mod._build_reason(cwd)
+        self.assertIn("freeze.sh done", reason)
+        self.assertIn("--handoff", reason)
+
+        lines = reason.splitlines()
+        step2 = next(l for l in lines if l.startswith("2) "))
+        step4 = next(l for l in lines if l.startswith("4) "))
+        done_line = next(l for l in lines[lines.index(step4) :] if "freeze.sh done" in l)
+
+        handoff2 = step2.split("--handoff ", 1)[1].strip()
+        handoff4 = done_line.split("--handoff ", 1)[1].strip()
+        self.assertEqual(
+            handoff2,
+            handoff4,
+            "2) 예약과 4) 완료 신호의 --handoff 경로가 달라 done이 예약을 못 찾는다",
+        )
 
     # ── blocker 1 회귀 재현: deny 사유가 안내하는 절차를 문자 그대로 실행 ──
     # 문자열 포함 여부만 보면(예: "wfledger.sh init" 이 들어있는지) --summary 같은

@@ -305,6 +305,13 @@ def _build_reason(cwd: str, marker_dir: Path | None = None) -> str:
         "내는 경우) 예약이 하나도 안 걸린 채로 끝난다 — --at HH:MM 을 추가해 시각을 "
         "직접 지정해라. 예: --at 18:00\n"
         "3) 예약이 걸린 뒤에 Workflow를 다시 호출해라.\n"
+        # 4) 없이 끝내면 Workflow가 정상 종료돼도 예약이 살아있는 채로 남는다 —
+        # 완료 신호(done)를 안 남기면 리셋 시각에 이미 끝난 작업을 헤드리스로
+        # 다시 열어버린다. 이 훅이 절차를 1~3으로만 안내한 탓에, 훅에 막혀 예약을
+        # 건 세션은 해제 방법을 안내받은 적이 아예 없었다(2026-08-28 코드 감사).
+        "4) Workflow가 끝나고 작업이 완료되면 반드시 완료 신호를 남겨라 — 안 남기면 예약이 "
+        "살아남아 땡 시각에 이미 끝난 작업을 다시 연다:\n"
+        f"   bash ~/.claude/skills/freeze/scripts/freeze.sh done --handoff \"{ledger}\"\n"
         "이 가드가 필요 없으면 FREEZE_HOOK_OFF=1 로 꺼라."
     )
 
