@@ -340,6 +340,135 @@ OUT=$(bash "$FZ" reserve --at +1h --cwd "$LEDGER_NEW_CWD" --handoff "$LEDGER_NEW
 echo "$OUT" | grep -q "얼음" && ok "세션 미탐지에도 ledger reserve 성공" || fail "ledger reserve 실패: $OUT"
 bash "$FZ" cancel freshledgerjob > /dev/null
 
+echo "== ledger 게이트 발동: 원장에 남은 단계가 없으면 재개를 생략한다 (수정 B) =="
+# 원장의 유일한 단계를 체크(=remaining 이 비어짐)한 뒤 ledger 모드로 예약하면,
+# thaw 는 재개를 부르지 않고 completed_early 로 조용히 끝나야 한다.
+: > "$CALLS"
+GATE_HANDOFF=$(bash "$WFL" init --job gatejob --cwd "$FAKE_CWD" --summary "게이트 테스트" --session "$SESSION" --goal "게이트 목표" --done-when "게이트 완료 기준")
+node -e '
+const fs = require("fs");
+const p = process.argv[1];
+let s = fs.readFileSync(p, "utf8");
+s = s.replace("- [ ] 1. (여기 채워라)", "- [ ] 1. 유일한 단계");
+fs.writeFileSync(p, s);
+' "$GATE_HANDOFF"
+bash "$WFL" mark --ledger "$GATE_HANDOFF" --step 1 > /dev/null
+bash "$FZ" reserve --at +2s --pad 0 --cwd "$FAKE_CWD" --handoff "$GATE_HANDOFF" --job gatejob --mode ledger > /dev/null
+for i in $(seq 1 20); do
+  GATEST=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$FREEZE_STATE_DIR/gatejob/reservation.json')).status)")
+  [ "$GATEST" = "completed_early" ] && break
+  sleep 1
+done
+[ "$GATEST" = "completed_early" ] && ok "원장 완료 상태 → completed_early (재개 생략)" || fail "게이트 미발동: status=$GATEST"
+# 재개 호출의 고유 표지는 --permission-mode 다 — haiku 프로브는 이 플래그를 안 쓴다.
+# ledger 모드는 --resume 을 안 쓰므로 기존 케이스처럼 "--resume" 문자열로는 판정할 수 없다.
+grep -q -- "--permission-mode" "$CALLS" && fail "게이트가 발동했는데도 재개 호출이 실행됨" || ok "재개 호출 없음 (haiku 프로브는 찍힐 수 있음)"
+
+echo "== ledger 게이트: 원장 파일이 사라지면 완료로 오판정하지 않는다 (수정 B 회귀 — ledger_complete 의 [ -f \$HANDOFF ] 가드 경로. remaining 은 이 가드에 먼저 막혀 아예 불리지 않는다) =="
+: > "$CALLS"
+LOST_HANDOFF=$(bash "$WFL" init --job lostledgerjob --cwd "$FAKE_CWD" --summary "분실 테스트" --session "$SESSION" --goal "g" --done-when "d")
+bash "$FZ" reserve --at +2s --pad 0 --cwd "$FAKE_CWD" --handoff "$LOST_HANDOFF" --job lostledgerjob --mode ledger > /dev/null
+rm -f "$LOST_HANDOFF"
+for i in $(seq 1 20); do
+  LOSTST=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$FREEZE_STATE_DIR/lostledgerjob/reservation.json')).status)")
+  [ "$LOSTST" = "done" ] && break
+  sleep 1
+done
+[ "$LOSTST" = "done" ] && ok "원장 분실에도 게이트가 오판정하지 않고 정상 재개" || fail "원장 분실 시 상태=$LOSTST (기대 done)"
+grep -q -- "--permission-mode" "$CALLS" && ok "재개 호출이 실제로 실행됨" || fail "재개 호출 누락: $(cat "$CALLS" 2>/dev/null)"
+
+echo "== ledger 게이트: 체크박스가 없는 원장은 판정 불가로 다뤄 재개를 진행한다 (수정 B 회귀) =="
+: > "$CALLS"
+NOBOX_HANDOFF="$FAKE_CWD/nobox-handoff.md"
+{
+  echo "# 원장"
+  echo "체크박스 섹션을 지운 원장"
+} > "$NOBOX_HANDOFF"
+bash "$FZ" reserve --at +2s --pad 0 --cwd "$FAKE_CWD" --handoff "$NOBOX_HANDOFF" --job noboxjob --mode ledger > /dev/null
+for i in $(seq 1 20); do
+  NOBOXST=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$FREEZE_STATE_DIR/noboxjob/reservation.json')).status)")
+  [ "$NOBOXST" = "done" ] && break
+  sleep 1
+done
+[ "$NOBOXST" = "done" ] && ok "체크박스 없는 원장은 게이트 미발동, 정상 재개" || fail "체크박스 없는 원장에서 상태=$NOBOXST (기대 done)"
+grep -q -- "--permission-mode" "$CALLS" && ok "재개 호출이 실제로 실행됨" || fail "재개 호출 누락: $(cat "$CALLS" 2>/dev/null)"
+
+echo "== ledger 게이트: 상위 단계는 체크됐고 들여쓴 하위 미체크 항목만 남으면 게이트가 발동하지 않는다 (절 스코프+들여쓰기 인식 판정 회귀) =="
+# 이 단언이 판별하는 대상은 "파일 전체를 보는 체크박스 판정"(= remaining 단독 판정과
+# 같은 형태)이다. 그 형태에서는 여기가 실패한다(실측 확인). 게이트가 아예 없던 시절의
+# 코드에서는 항상 재개하므로 그냥 통과한다 — 판별 대상이 아니다. 파일 전체에 '- [x]' 가
+# 있는지만 보는 존재 확인은 통과하고, remaining 의 '^- ' 앵커(wfledger.sh:258)는
+# 들여쓴 "  - [ ] 1a. 미완" 을 못 잡아 출력이 비어 게이트가 잘못 발동했다(오발동
+# 2번, thaw.sh ledger_complete 주석 참고). 지금은 '## 단계' 절 스코프 안에서
+# 들여쓴 미체크 항목도 세므로 total=2 unchecked=1 → 게이트 미발동 → 정상 재개.
+: > "$CALLS"
+INDENT_HANDOFF=$(bash "$WFL" init --job indentjob --cwd "$FAKE_CWD" --summary "들여쓰기 테스트" --session "$SESSION" --goal "g" --done-when "d")
+node -e '
+const fs = require("fs");
+const p = process.argv[1];
+let s = fs.readFileSync(p, "utf8");
+s = s.replace("- [ ] 1. (여기 채워라)", "- [x] 1. 상위 완료\n  - [ ] 1a. 미완");
+fs.writeFileSync(p, s);
+' "$INDENT_HANDOFF"
+bash "$FZ" reserve --at +2s --pad 0 --cwd "$FAKE_CWD" --handoff "$INDENT_HANDOFF" --job indentjob --mode ledger > /dev/null
+for i in $(seq 1 20); do
+  INDENTST=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$FREEZE_STATE_DIR/indentjob/reservation.json')).status)")
+  [ "$INDENTST" = "done" ] && break
+  sleep 1
+done
+[ "$INDENTST" = "done" ] && ok "들여쓴 미체크 하위 항목이 있으면 게이트 미발동, 정상 재개" || fail "들여쓴 미체크 항목에서 상태=$INDENTST (기대 done — 게이트 오발동 의심)"
+grep -q -- "--permission-mode" "$CALLS" && ok "재개 호출이 실제로 실행됨" || fail "재개 호출 누락: $(cat "$CALLS" 2>/dev/null)"
+
+echo "== ledger 게이트: 하이픈이 아닌 불릿의 미체크 항목도 남은 단계로 센다 (불릿 표기 회귀) =="
+# 원장의 단계 절을 편집하는 건 스크립트가 아니라 재개 LLM 이라(재개 프롬프트가 "원장의
+# 단계 체크박스를 갱신하고" 라고 지시한다), 마크다운에서 합법인 '* [ ]' 나 불릿 뒤 공백이
+# 없는 '-[ ]' 가 섞여 들어올 여지가 실재한다. 이 표기들은 remaining 의 '^- ' 앵커에도,
+# 처음 구현한 '^[[:space:]]*-[[:space:]]\[' 패턴에도 안 걸려서 나머지가 전부 '- [x]' 이면
+# 게이트가 오발동했다(실측 확인) — 남은 작업이 조용히 버려지는 가장 위험한 방향이다.
+: > "$CALLS"
+BULLET_HANDOFF=$(bash "$WFL" init --job bulletjob --cwd "$FAKE_CWD" --summary "불릿 표기 테스트" --session "$SESSION" --goal "g" --done-when "d")
+node -e '
+const fs = require("fs");
+const p = process.argv[1];
+let s = fs.readFileSync(p, "utf8");
+s = s.replace("- [ ] 1. (여기 채워라)", "- [x] 1. 상위 완료\n* [ ] 2. 별표 불릿 미완\n-[ ] 3. 공백 없는 미완");
+fs.writeFileSync(p, s);
+' "$BULLET_HANDOFF"
+bash "$FZ" reserve --at +2s --pad 0 --cwd "$FAKE_CWD" --handoff "$BULLET_HANDOFF" --job bulletjob --mode ledger > /dev/null
+for i in $(seq 1 20); do
+  BULLETST=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$FREEZE_STATE_DIR/bulletjob/reservation.json')).status)")
+  [ "$BULLETST" = "done" ] && break
+  sleep 1
+done
+[ "$BULLETST" = "done" ] && ok "비하이픈·공백없는 불릿의 미체크 항목도 세어 게이트 미발동" || fail "비하이픈 불릿에서 상태=$BULLETST (기대 done — 게이트 오발동)"
+grep -q -- "--permission-mode" "$CALLS" && ok "재개 호출이 실제로 실행됨" || fail "재개 호출 누락: $(cat "$CALLS" 2>/dev/null)"
+
+echo "== ledger 게이트: '## 단계' 절 밖(예: 재개 결과)의 체크박스는 판정에 섞이지 않는다 (절 스코프 판정 회귀) =="
+# 위와 같이 "파일 전체를 보는 판정"을 판별하는 단언이다(게이트가 없던 코드에서는
+# 통과한다). '## 단계' 절엔 체크박스가
+# 하나도 없는데(=원래는 판정 불가여야 함) 파일 전체 존재 확인이 '## 재개 결과' 의
+# '- [x] 끝' 을 보고 통과하고, '## 단계' 에 미체크 항목이 없으니 remaining 도 비어
+# 게이트가 잘못 발동했다(오발동 1번). 지금은 '## 단계' 절만 스코프하므로 그 절 안엔
+# 체크박스가 없어 total=0 → 판정 불가 → 안전한 방향(재개 진행)으로 넘어간다.
+: > "$CALLS"
+OUTSIDE_HANDOFF=$(bash "$WFL" init --job outsidejob --cwd "$FAKE_CWD" --summary "절 밖 체크박스 테스트" --session "$SESSION" --goal "g" --done-when "d")
+node -e '
+const fs = require("fs");
+const p = process.argv[1];
+let s = fs.readFileSync(p, "utf8");
+s = s.replace("- [ ] 1. (여기 채워라)", "(단계는 아직 안 적었다 — 체크박스 없음)");
+s += "\n## 재개 결과\n- [x] 끝\n";
+fs.writeFileSync(p, s);
+' "$OUTSIDE_HANDOFF"
+bash "$FZ" reserve --at +2s --pad 0 --cwd "$FAKE_CWD" --handoff "$OUTSIDE_HANDOFF" --job outsidejob --mode ledger > /dev/null
+for i in $(seq 1 20); do
+  OUTSIDEST=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$FREEZE_STATE_DIR/outsidejob/reservation.json')).status)")
+  [ "$OUTSIDEST" = "done" ] && break
+  sleep 1
+done
+[ "$OUTSIDEST" = "done" ] && ok "'## 단계' 절 밖의 체크박스는 무시되고 판정 불가로 정상 재개" || fail "절 밖 체크박스에서 상태=$OUTSIDEST (기대 done — 게이트 오발동 의심)"
+grep -q -- "--permission-mode" "$CALLS" && ok "재개 호출이 실제로 실행됨" || fail "재개 호출 누락: $(cat "$CALLS" 2>/dev/null)"
+
 echo "== mode=resume: 기존 계약(--resume <SESSION>) 유지 =="
 : > "$CALLS"; echo "# h" > "$HANDOFF"
 bash "$FZ" reserve --at +2s --pad 0 --cwd "$FAKE_CWD" --handoff "$HANDOFF" --job resumejob > /dev/null
@@ -349,6 +478,23 @@ for i in $(seq 1 20); do
   sleep 1
 done
 grep -q -- "--resume $SESSION" "$CALLS" && ok "resume 모드는 --resume 유지" || fail "resume 계약 깨짐: $(cat "$CALLS" 2>/dev/null)"
+
+echo "== DONE_NOTE: reserve(체인 없음) 로 건 재개 프롬프트에도 done 안내가 실린다 (수정 A 회귀) =="
+# 바로 위 resumejob 은 reserve(체인 필드 자체가 없음)로 걸려 이미 재개까지 완주했다 —
+# CHAIN_NOTE 안에서만 done 안내가 나가던 예전 코드라면 이 경로엔 안내가 전혀 없었다.
+grep -qF -- "freeze.sh done --handoff" "$CALLS" && ok "reserve(체인 없음) 프롬프트에 done 안내 포함" || fail "done 안내 누락: $(cat "$CALLS" 2>/dev/null)"
+
+echo "== DONE_NOTE: ledger 모드 프롬프트에도 done 안내가 실린다 (수정 A 회귀) =="
+: > "$CALLS"
+LEDGER_DONE_HANDOFF=$(bash "$WFL" init --job ledgerdonejob --cwd "$FAKE_CWD" --summary "done 안내 확인" --session "$SESSION" --goal "g" --done-when "d")
+bash "$FZ" reserve --at +2s --pad 0 --cwd "$FAKE_CWD" --handoff "$LEDGER_DONE_HANDOFF" --job ledgerdonejob --mode ledger > /dev/null
+for i in $(seq 1 20); do
+  LDONEST=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$FREEZE_STATE_DIR/ledgerdonejob/reservation.json')).status)")
+  [ "$LDONEST" = "done" ] && break
+  sleep 1
+done
+[ "$LDONEST" = "done" ] && ok "ledgerdonejob 완주" || fail "ledgerdonejob status=$LDONEST"
+grep -qF -- "freeze.sh done --handoff" "$CALLS" && ok "ledger 모드 프롬프트에 done 안내 포함" || fail "ledger 모드 done 안내 누락: $(cat "$CALLS" 2>/dev/null)"
 
 echo "== 완료 마커는 job 단위로 격리된다 (다른 job 의 신호를 arm 이 지우지 않는다) =="
 # 회귀 재현: 같은 handoff 를 우연히 공유하는 서로 무관한 두 job. 예전 코드는
