@@ -53,3 +53,70 @@ export FREEZE_NODE_BIN
 # 순서 주의: 이 정의는 반드시 (a) 탐색이 끝난 뒤에 와야 한다. 먼저 정의하면 (a)의
 # `command -v node` 가 PATH 의 실행 파일이 아니라 이 함수를 찾아 순환한다.
 node() { "$FREEZE_NODE_BIN" "$@"; }
+
+# ---------------------------------------------------------------------------
+# (d) reservation.json 쓰기·읽기 공용 JS 조각.
+#
+# 배경(blocker): writeFileSync 는 O_TRUNC 후 write 라 관측 가능하게 비원자적이다.
+# 예전엔 cmd_reserve 가 reservation.json 을 쓰고 슬리퍼(thaw.sh)를 띄운 뒤 cmd_arm 이
+# 같은 파일에 두 번째 read-modify-write(chain/chain_left/via)를 했고, 기동 직후
+# 밀리초 안에 field() 로 resume_at 을 읽는 thaw.sh 가 그 truncate~write 창에 걸렸다
+# (프리미티브 측정: 171,167회 읽기 중 971회 = 0.57% JSON.parse 실패, arm 회당 재현율 약 3%).
+# 결과는 "5시간 뒤에 뜨기로 한 헤드리스 세션이 지금 뜬다" 였다 — 빈 resume_at 이
+# 산술 확장에서 0 으로 읽혀 대기 루프가 즉시 탈출했기 때문.
+#
+# 세 겹으로 막는다: (1) 체인 필드를 첫 쓰기에 합쳐 두 번째 쓰기를 없앴다(freeze.sh),
+# (2) 남은 모든 쓰기를 아래 writeJsonAtomic 으로 원자화, (3) 읽기를 fail-closed 로
+# 바꿨다(아래 FREEZE_JS_FIELD + thaw.sh 의 정수 검사).
+#
+# 왜 .js 파일이 아니라 문자열 변수인가: 이 코드베이스의 JSON 조작은 전부
+# `node -e '...'` 인라인이고 .js 파일이 하나도 없다. freeze.sh 와 thaw.sh 는 서로를
+# source 하지 않지만 둘 다 이 파일을 source 하므로, 공유 위치는 여기가 맞다.
+# 호출 지점은 인접한 두 인용 문자열을 셸이 한 단어로 붙이는 성질을 써서 앞세운다:
+#   node -e "$FREEZE_JS_ATOMIC"'
+#   ...
+#   writeJsonAtomic(p, d);
+#   ' "$RES" ...
+# 식별자에 _A/_F 접미를 붙인 이유: `node -e` 의 코드는 한 스코프에서 돌기 때문에
+# 호출부의 `const fs = require("fs")` 와 이름이 겹치면 SyntaxError 로 즉사한다.
+
+# 원자적 JSON 쓰기 — 같은 디렉토리의 임시 파일에 다 쓴 뒤 renameSync 로 갈아치운다.
+# 같은 디렉토리 = 같은 파일시스템이라 rename(2) 은 원자적이고, 읽는 쪽은 완전한 옛
+# 내용이나 완전한 새 내용 중 하나만 본다(잘린 중간 상태가 존재하지 않는다).
+# 임시 파일 이름을 점으로 시작하게 두는 이유: `"$STATE_ROOT"/*/reservation.json` 같은
+# 기존 글롭에 절대 걸리지 않게.
+FREEZE_JS_ATOMIC='
+const _fsA = require("fs"), _pathA = require("path");
+function writeJsonAtomic(p, obj) {
+  const tmp = _pathA.join(_pathA.dirname(p), "." + _pathA.basename(p) + ".tmp." + process.pid);
+  _fsA.writeFileSync(tmp, JSON.stringify(obj, null, 2));
+  try { _fsA.renameSync(tmp, p); }
+  catch (e) { try { _fsA.unlinkSync(tmp); } catch (e2) { /* 청소 실패는 원 에러를 가리지 않는다 */ } throw e; }
+}
+'
+
+# 필드 하나 읽기 — argv: <path> <key>. 값이 없으면 빈 문자열.
+# 파싱 실패를 곧바로 실패로 보지 않고 20ms 간격으로 짧게 재시도한다(쓰기 창은 밀리초
+# 단위다). 위 (2)로 원자적 쓰기가 보장된 뒤엔 이 경로에 도달할 일이 사실상 없지만,
+# 새 쓰기 지점이 규칙을 어겼을 때를 위한 방어 깊이로 남긴다.
+# 끝까지 실패하면 stdout 을 비우고 비영 종료코드(3)를 낸다 — 여기서 빈 문자열을
+# 성공으로 돌려주는 게 바로 fail-open 이었다(호출자가 산술 확장에서 0 으로 읽는다).
+# Atomics.wait 로 자는 이유: 동기 대기라야 이 한 줄짜리 스크립트 구조가 유지된다
+# (node 메인 스레드에서 허용된다 — 브라우저와 다르다).
+FREEZE_JS_FIELD='
+const _fsF = require("fs");
+const _pF = process.argv[1], _kF = process.argv[2];
+let _errF;
+for (let _i = 0; _i < 10; _i++) {
+  try {
+    const _dF = JSON.parse(_fsF.readFileSync(_pF));
+    process.stdout.write(String(_dF[_kF] ?? "") + "\n");
+    process.exit(0);
+  } catch (e) {
+    _errF = e;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+  }
+}
+process.stderr.write("field: 읽기 실패 " + _pF + " [" + _kF + "] — " + (_errF && _errF.message) + "\n");
+process.exit(3);
+'

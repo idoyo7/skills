@@ -32,23 +32,44 @@ sha256_hex() {
   fi
 }
 
-field() { node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1]))[process.argv[2]] ?? "")' "$RES" "$1"; }
+# reservation.json 을 읽을 수 없으면 fail-closed 로 죽는다.
+#
+# 이 스크립트에서 가장 위험한 실패는 "예약이 안 도는 것"이 아니라 "안 부른 세션이 지금
+# 뜨는 것"이다 — 사용자가 그 시각에 그 세션에서 일하는 중이고, 쿼터도 지금 태운다.
+# 예전 field() 는 JSON.parse 예외를 stderr 로만 흘리고 빈 문자열을 성공으로 돌려줬고,
+# 아래 대기 루프가 빈 RESUME_AT 을 산술 확장에서 0 으로 읽어 remain<=0 → 즉시 재개로
+# 샜다(blocker. 레이스 자체와 원자적 쓰기는 _node.sh (d) 주석 참고).
+# 그래서 (a) field() 는 실패를 비영 종료코드로 알리고(짧은 재시도는 공용 JS 안에 있다),
+# (b) 필수 필드는 전부 `|| die` 로 받고, (c) 정수여야 하는 값은 산술 확장에 맡기지 않고
+# 정규식으로 직접 확인한다.
+die() { echo "[$(date '+%F %T')] ERROR: $* — 즉시 재개하지 않고 종료한다. job=$JOB" >&2; exit 1; }
+
+field() { node -e "$FREEZE_JS_FIELD" "$RES" "$1"; }
 set_status() {
-  node -e '
+  node -e "$FREEZE_JS_ATOMIC"'
 const fs = require("fs"), [p, s] = process.argv.slice(1);
 const d = JSON.parse(fs.readFileSync(p));
 d.status = s; d.updated_at = Math.floor(Date.now()/1000);
-fs.writeFileSync(p, JSON.stringify(d, null, 2));
-' "$RES" "$1"
+writeJsonAtomic(p, d);
+' "$RES" "$1" || echo "[$(date '+%F %T')] WARN: status 갱신 실패 ($1) — $RES" >&2
 }
 
-RESUME_AT=$(field resume_at)
-SESSION=$(field session_id)
-CWD=$(field cwd)
-HANDOFF=$(field handoff)
-PERM=$(field permission_mode)
+# `X=$(field ...) || die` 는 성립한다 — 대입만 있는 명령의 종료코드는 명령 치환의
+# 종료코드다. 이 스크립트엔 set -e 가 없으므로(백그라운드 슬리퍼라 의도된 선택) 이
+# 명시적 || 없이는 실패가 조용히 지나간다.
+RESUME_AT=$(field resume_at) || die "reservation.json 을 읽지 못했다(resume_at): $RES"
+# 산술 확장은 빈 문자열도, 쓰레기도 조용히 0 으로 만든다 — 그게 곧 "지금 재개"다.
+[[ "$RESUME_AT" =~ ^[0-9]+$ ]] || die "resume_at 이 정수가 아니다: '$RESUME_AT' ($RES)"
+SESSION=$(field session_id) || die "reservation.json 을 읽지 못했다(session_id): $RES"
+CWD=$(field cwd) || die "reservation.json 을 읽지 못했다(cwd): $RES"
+# 빈 cwd 로 내려가면 `cd ""` 가 조용히 성공해 엉뚱한 디렉토리에서 재개된다.
+# reserve/arm 은 --cwd 를 필수로 받으므로 비어 있다는 건 파일이 깨졌다는 뜻이다.
+[ -n "$CWD" ] || die "cwd 가 비었다 ($RES)"
+HANDOFF=$(field handoff) || die "reservation.json 을 읽지 못했다(handoff): $RES"
+[ -n "$HANDOFF" ] || die "handoff 가 비었다 ($RES)"
+PERM=$(field permission_mode) || die "reservation.json 을 읽지 못했다(permission_mode): $RES"
 [ -n "$PERM" ] || PERM="bypassPermissions"   # 구버전 reservation 호환
-MODE=$(field mode)
+MODE=$(field mode) || die "reservation.json 을 읽지 못했다(mode): $RES"
 [ -n "$MODE" ] || MODE="resume"              # 구버전 reservation 호환
 
 # 완료 신호 — arm 으로 미리 걸어둔 예약은, 작업이 먼저 끝나면 헛돌지 않고 조용히 종료해야 한다.
@@ -67,8 +88,10 @@ MODE=$(field mode)
 #      created_at 이 우연히 같은 값으로 뭉개지는 오판정이 실측됐다.
 DONE_MARK="$DIR/done"
 HANDOFF_MARK="$STATE_ROOT/done-by-handoff/$(sha256_hex "$HANDOFF")"
-JOB_CREATED_AT=$(field created_at)
-[ -n "$JOB_CREATED_AT" ] || JOB_CREATED_AT=0   # 구버전 reservation 호환 — 항상 신호를 받아들인다
+JOB_CREATED_AT=$(field created_at) || die "reservation.json 을 읽지 못했다(created_at): $RES"
+# 구버전 reservation 호환 — 필드가 없으면 0(항상 신호를 받아들인다). 아래 is_done_signaled
+# 가 이 값을 `-ge` 로 비교하므로, 값이 정수임을 여기서 확정해 둔다.
+[[ "$JOB_CREATED_AT" =~ ^[0-9]+$ ]] || JOB_CREATED_AT=0
 
 is_done_signaled() {
   [ -f "$DONE_MARK" ] && return 0
@@ -182,8 +205,16 @@ echo "[$(date '+%F %T')] thaw 시작 — job=$JOB 땡=$(fmt_epoch "$RESUME_AT" '
 
 # 1) 예약 시각까지 대기 (60초 단위로 끊어 자며 취소·완료 여부 확인)
 # sleep 은 백그라운드 + wait 로 돌린다 — 포그라운드 sleep 은 bash 의 TERM 처리를 막아 kill 이 최대 60초 늦어진다.
+#
+# 이 구간(과 아래 프로브 구간)의 completed_early 전이 앞에는 release_next_job 이 없다 —
+# 다음 창 선무장은 프로브를 다 지난 뒤(3번 구간)에야 일어나므로 여기엔 해제할 자식이
+# 아직 존재하지 않는다. release_next_job 이 세우는 불변식의 범위는 "이 thaw 프로세스가
+# 스스로 선무장한 NEXT_JOB" 까지다(캐치업으로 다시 뜬 프로세스는 이전 화신이 낳은 자식을
+# 모른다 — 그 경우는 자식 자신의 완료 신호 검사(is_done_signaled)가 받아낸다. 그 검사에서
+# 실제로 버티는 마커가 무엇인지는 아래 release_next_job 주석에 적어뒀다 — job 마커가 아니다).
 while :; do
-  [ "$(field status)" = "cancelled" ] && { echo "취소됨 — 종료"; exit 0; }
+  cur_status=$(field status) || die "대기 중 reservation.json 을 읽지 못했다(status): $RES"
+  [ "$cur_status" = "cancelled" ] && { echo "취소됨 — 종료"; exit 0; }
   is_done_signaled && { set_status "completed_early"; echo "완료 신호 감지 — 재개 없이 종료"; exit 0; }
   now=$(date +%s)
   remain=$(( RESUME_AT - now ))
@@ -194,7 +225,8 @@ done
 # 2) haiku 프로브 — 한도가 실제로 풀렸는지 몇 토큰으로 확인
 probe_ok=0
 for i in $(seq 1 "$PROBE_MAX"); do
-  [ "$(field status)" = "cancelled" ] && { echo "취소됨 — 종료"; exit 0; }
+  cur_status=$(field status) || die "프로브 중 reservation.json 을 읽지 못했다(status): $RES"
+  [ "$cur_status" = "cancelled" ] && { echo "취소됨 — 종료"; exit 0; }
   is_done_signaled && { set_status "completed_early"; echo "완료 신호 감지 — 재개 없이 종료"; exit 0; }
   if "$CLAUDE_BIN" -p --model haiku "ok" > "$DIR/probe.log" 2>&1; then
     probe_ok=1
@@ -218,8 +250,11 @@ fi
 # 신호 확인) 그 다음 창을 조용히 취소한다 — 이중 재개는 아래 두 안전장치로 막힌다:
 #   1) 여기서 완료 신호를 보고 NEXT_JOB 을 명시적으로 cancel 한다.
 #   2) 설령 이 cancel 이 실행되기 전에 thaw 프로세스가 죽어도, NEXT_JOB 자신의 대기
-#      루프(위 1번 섹션)가 깨어날 때마다 DONE_MARK 를 검사하므로 스스로 조용히 종료한다.
+#      루프(위 1번 섹션)가 깨어날 때마다 is_done_signaled 를 검사하므로 스스로 조용히
+#      종료한다. 여기서 실제로 버티는 마커는 HANDOFF_MARK 다 — 자식의 job 마커
+#      (DONE_MARK)가 아니다. 근거는 아래 release_next_job 주석.
 # 즉 cancel 은 status 를 깨끗하게 유지하기 위한 것이고, 이중 재개 방지의 근거는 2) 다.
+# 그래서 아래 release_next_job 은 실패해도 계약을 깨지 않는다 — 경고만 남기고 넘어간다.
 #
 # 선무장 호출은 세 가지를 반드시 명시로 넘긴다(전부 auto-탐지에 맡기면 리셋 경계에서 깨진다):
 #   --at <RESUME_AT + 5시간> — cmd_arm 기본값인 --at auto 를 쓰면 안 된다. 지금 이 순간이
@@ -239,11 +274,13 @@ fi
 #     새로 Date.now() 를 찍게 두면 자식의 created_at 이 부모가 실행 중 이미 받은
 #     신호보다 나중이 되어 "내 created_at 보다 오래된 신호는 무시" 규칙에 걸려
 #     신호를 놓친다.
-CHAIN=$(field chain)
-CHAIN_LEFT=$(field chain_left)
-[ -n "$CHAIN_LEFT" ] || CHAIN_LEFT=0
-PAD=$(field pad)
-[ -n "$PAD" ] || PAD=300   # 구버전 reservation 호환
+CHAIN=$(field chain) || die "reservation.json 을 읽지 못했다(chain): $RES"
+CHAIN_LEFT=$(field chain_left) || die "reservation.json 을 읽지 못했다(chain_left): $RES"
+# reserve 로 걸린 예약엔 이 필드가 없다(빈 문자열). 아래에서 `-gt` 로 비교하므로 정수로
+# 확정해 둔다 — 빈 값을 그대로 두면 test 가 rc=2 를 내고 판정이 우연에 맡겨진다.
+[[ "$CHAIN_LEFT" =~ ^[0-9]+$ ]] || CHAIN_LEFT=0
+PAD=$(field pad) || die "reservation.json 을 읽지 못했다(pad): $RES"
+[[ "$PAD" =~ ^[0-9]+$ ]] || PAD=300   # 구버전 reservation 호환
 
 # done 안내는 예전엔 CHAIN_NOTE 안에서만 채워졌다 — 그런데 CHAIN_NOTE 는 선무장이
 # "성공"한 체인 분기(바로 아래 if)에서만 값이 들어간다. 그래서 (a) reserve 로 걸린
@@ -273,23 +310,100 @@ if [ "$CHAIN" = "1" ] && [ "$CHAIN_LEFT" -gt 0 ]; then
   else
     NEXT_JOB=""
     echo "[$(date '+%F %T')] !!! 다음 창 선무장 실패 — 체인이 여기서 끊긴다. 수동으로 arm 필요: $DIR/thaw.log 확인" >&2
-    node -e '
+    node -e "$FREEZE_JS_ATOMIC"'
 const fs = require("fs"), [p, msg] = process.argv.slice(1);
 const d = JSON.parse(fs.readFileSync(p));
 d.chain_warning = msg;
-fs.writeFileSync(p, JSON.stringify(d, null, 2));
+writeJsonAtomic(p, d);
 ' "$RES" "다음 창 선무장 실패 — 체인이 끊겼다. bash $SCRIPT_DIR/freeze.sh status 로 확인, 수동 arm 필요: $DIR/thaw.log"
   fi
 fi
+
+# 선무장해 둔 다음 창을 해제한다.
+#
+# 반드시 부모의 status 를 완료(completed_early / done)로 바꾸기 **전에** 부른다. 순서를
+# 뒤집으면 "부모는 이미 완료인데 자식은 아직 frozen" 인 중간 상태가 관측 가능하게 열린다
+# (cancel 은 fork bash + node 라 부하가 걸리면 수백 ms). 실측: 테스트가 부모 status 만 보고
+# 곧바로 자식 status 를 읽어 frozen 을 보고 빨개졌다. 이 순서로 두면
+# "부모가 완료로 보인다 ⇒ 자식은 이미 해제됐다" 가 불변식이 되어 그 창이 사라진다.
+# 이 불변식의 게이트는 test_freeze.sh 의 "체인: ... cancel 이 부모 status 전환보다 먼저"
+# 세 섹션이다 — 아래 호출 지점 셋에 하나씩 대응한다(프로브 구간 분기 / ledger 완료 게이트
+# 분기 / 재개 이후 분기). status 를 폴링해 중간 상태를 목격하려는 방식은 게이트로 쓸 수
+# 없다(순서를 되돌린 변이로 스위트를 부하 하 8회 돌려 1회만 빨개졌다. 12.5%). 그래서 세
+# 섹션 모두 cancel 과 set_status 두 쓰기의 node 호출 순서를 직접 관측한다.
+# 호출 지점을 넷째로 늘리면 게이트 섹션도 같이 늘려라 — 지점만 늘리면 그 지점은 무보호가
+# 된다. ledger 게이트 분기가 정확히 그렇게 한 라운드 동안 무보호로 남아 있었다.
+#
+# 실패·지연이 부모 status 를 영구히 frozen 으로 남기지 않게, 실패는 경고로만 남기고
+# 항상 rc=0 으로 돌아온다 — 호출자는 그 뒤에 무조건 set_status 를 부른다. 이중 재개
+# 방지는 이 cancel 이 아니라 자식 자신의 완료 신호 검사(is_done_signaled)에 근거하므로
+# (위 2번 안전장치) 이 순서 교환은 그 계약을 건드리지 않는다.
+#
+# cancel 과 set_status 사이에서 죽으면 남는 상태는 "자식 cancelled + 부모 = 그 시점의
+# status" 다. 그 뒤가 어떻게 되는지는 호출 지점마다 다르다 — 예전 주석이 한 문장으로
+# 묶어 "부모 frozen 이라 check 캐치업이 다시 띄우고, 새 화신이 대기 루프 첫 바퀴에서
+# 완료 신호를 보고 completed_early 로 수렴한다" 고 일반화했는데, 그 문장은 세 지점을
+# 하나로 뭉갠다. 종착점(completed_early)은 앞의 두 지점에서 같지만 **거기 도달하는
+# 기전이 다르고, 한쪽은 쿼터를 태운다** — 이 스킬이 아끼려는 바로 그 자원이다:
+#   - 프로브 구간 분기(아래 `is_done_signaled` → completed_early): 부모가 아직 frozen
+#     이라(`set_status "running"` 앞) cmd_check 가 캐치업한다(freeze.sh 의 cmd_check 는
+#     `[ "$status" = "frozen" ] || continue`). 새 화신은 **대기 루프 첫 바퀴에서**
+#     is_done_signaled 가 참이라 즉시 completed_early 로 수렴한다 — 프로브를 태우지
+#     않는다(실측: claude 호출 0회). 위 일반화가 맞는 유일한 지점이다.
+#   - ledger 완료 게이트 분기(아래 `ledger_complete` → completed_early): 부모가 frozen
+#     이라 캐치업되는 것까지는 같지만, **대기 루프에서 수렴하지 않는다**. 이 게이트는
+#     의도적으로 done 마커를 쓰지 않으므로(바로 아래 게이트 주석 참고) 새 화신에게
+#     is_done_signaled 는 거짓이고, 대기 루프가 조기 종료할 근거가 아예 없다.
+#     실제 경로는 이렇다(실측 확인 — 크래시 직후 상태를 직접 구성해 thaw 를 다시 띄웠다):
+#       땡이 이미 지났으므로 대기 루프를 첫 바퀴에 그냥 통과(remain<=0 → break)
+#         → **haiku 프로브를 1회 태운다**(프로브 루프도 신호를 못 보므로 정상 진행)
+#         → 체인 블록이 다음 창을 다시 선무장한다(그리고 곧 다시 cancel 한다)
+#         → 그 다음에야 ledger_complete 가 다시 참이 되어 completed_early.
+#     종착점은 같지만 프로브 1회 + 재무장 1회가 추가로 든다. 재개(전체 대화 복원)를
+#     막는 게 이 게이트의 목적이고 그건 지켜지므로 손해는 프로브 몇 토큰에 그친다 —
+#     다만 "대기 루프 첫 바퀴에서 수렴한다" 는 서술을 이 분기에 적용하면 거짓이다.
+#   - 재개 이후 지점(맨 아래 `is_done_signaled && release_next_job` → done/failed):
+#     부모가 이미 running 이다. cmd_check 는 running 을 재기동하지 않으므로 부모는
+#     영구히 running 으로 남는다 — 캐치업 자체가 일어나지 않는 지점이다. 동작 위험은
+#     없다: 재개는 이미 끝났고 자식은 cancelled 라 아무도 다시 뜨지 않는다. 남는 손해는
+#     status 표시가 영구히 부정확해지는 것뿐이다.
+#
+# is_done_signaled 에서 실제로 버티는 마커는 자식의 job 마커(DONE_MARK)가 아니라 handoff
+# 로 키잉된 마커(HANDOFF_MARK)다 — 이 문장을 job 마커로 적어두면 다음 사람이 근거를
+# 잘못 짚는다(그래서 고쳤다). 근거는 job 마커의 쓰기 범위다: job 마커는 `freeze.sh done`
+# 호출 시점에 이미 활성(frozen|running)이던 예약에만 쓰인다(freeze.sh:cmd_done 의 루프).
+# 그래서 done 이 NEXT_JOB 이 태어나기 "전"에 불린 경우 자식에겐 job 마커가 아예 없고,
+# 남는 건 handoff 마커 하나뿐이다.
+#
+# 코드 사실로서 cmd_done 은 handoff 마커를 (a) 활성 예약 매칭 여부와 무관하게 `if` 밖에서,
+# (b) 매칭 0건일 때 내는 `return 1` 보다 먼저 쓴다. 그 위치는 그대로 두는 게 맞다.
+# 다만 절 (a) 는 **지금 도달 가능한 파손 경로의 방어가 아니라 방어적 여유분**이다.
+# 예전 주석은 "이 두 가지가 깨지면 이중 재개가 조용히 살아난다" 고 단언했는데 그 시나리오는
+# 재현되지 않았다 — 계약 위반 변이 2종(E: 마커를 marked>0 일 때만 쓴다, F: 마커를
+# return 1 뒤로 옮긴다)을 만들어 프로브 구간에서 done 을 부르게 했더니, 그 시점 부모가
+# 아직 frozen 이라(thaw 는 그 뒤에야 running 으로 간다) done 이 언제나 활성 예약 1건을
+# 매칭해 marked=1 을 냈다. control/E/F 세 조건의 동작이 동일했고(--resume 0회) 전체
+# 스위트도 E·F 모두 녹색이었다. 즉 절 (a) 가 load-bearing 인 도달 가능한 상태를 구성하지
+# 못했다. 이 반증 기록을 남기는 이유는 하나다 — 다음 사람이 같은 검증을 처음부터 다시
+# 하지 않도록. 절 (a) 를 지우고 싶으면 먼저 그 도달 가능한 상태를 실제로 구성해 보여라.
+release_next_job() {
+  [ -n "$NEXT_JOB" ] || return 0
+  if bash "$SCRIPT_DIR/freeze.sh" cancel "$NEXT_JOB" >> "$DIR/thaw.log" 2>&1; then
+    echo "[$(date '+%F %T')] 선무장한 다음 창 해제: $NEXT_JOB"
+  else
+    echo "[$(date '+%F %T')] WARN: 다음 창 해제 실패 — job=$NEXT_JOB. 자식은 자기 대기 루프에서 완료 마커를 보고 스스로 종료한다: $DIR/thaw.log" >&2
+  fi
+  return 0
+}
 
 # 프로브를 지나오는 동안(위 2번 구간) 완료 신호가 도착했을 수 있다 — 프로브 루프는
 # 매 시도 "시작 전"에만 신호를 보므로, 마지막 시도가 성공해 루프를 빠져나온
 # 바로 그 순간에 도착한 신호는 아직 아무도 확인하지 않았다. 여기서 재개를 부르기
 # 직전에 한 번 더 확인해, 이미 끝난 작업을 전체 대화 재개로 다시 여는 사고를 막는다.
 if is_done_signaled; then
+  release_next_job          # status 전환보다 먼저 — release_next_job 주석 참고
   set_status "completed_early"
   echo "[$(date '+%F %T')] 완료 신호 감지(프로브 구간) — 재개 생략"
-  [ -n "$NEXT_JOB" ] && { bash "$SCRIPT_DIR/freeze.sh" cancel "$NEXT_JOB" >> "$DIR/thaw.log" 2>&1 || true; }
   exit 0
 fi
 
@@ -303,9 +417,9 @@ fi
 # 영구히 무력화된다(마커를 지우지 않는 설계, freeze.sh:cmd_done 참고). 영향 범위를
 # 자기 자신의 상태와 자기가 선무장한 다음 창(NEXT_JOB)까지로만 묶어둔다.
 if ledger_complete; then
+  release_next_job          # status 전환보다 먼저 — 위 완료 신호 분기와 같은 이유
   set_status "completed_early"
   echo "[$(date '+%F %T')] 원장에 남은 단계 없음 — 재개 생략 (ledger 완료 게이트)"
-  [ -n "$NEXT_JOB" ] && { bash "$SCRIPT_DIR/freeze.sh" cancel "$NEXT_JOB" >> "$DIR/thaw.log" 2>&1 || true; }
   exit 0
 fi
 
@@ -328,10 +442,10 @@ else
 fi
 
 # 완료 신호가 보이면 미리 걸어둔 다음 창은 필요 없다 — 조용히 해제한다.
-if [ -n "$NEXT_JOB" ] && is_done_signaled; then
-  bash "$SCRIPT_DIR/freeze.sh" cancel "$NEXT_JOB" >> "$DIR/thaw.log" 2>&1 || true
-  echo "[$(date '+%F %T')] 완료 신호 확인 — 선무장한 다음 창 해제: $NEXT_JOB"
-fi
+# 여기도 아래 set_status 보다 먼저다(원래도 그랬다 — release_next_job 주석의 불변식이
+# 이 지점에서도 성립해야 "부모가 done ⇒ 자식은 이미 해제됨" 이 한 가지 규칙으로 읽힌다).
+# (release_next_job 은 NEXT_JOB 이 비면 아무것도 하지 않고 바로 돌아온다)
+is_done_signaled && release_next_job
 
 if [ "$rc" = 0 ]; then set_status "done"; else set_status "failed"; fi
 echo "[$(date '+%F %T')] 재개 종료 rc=$rc — 출력: $DIR/resume-output.txt"

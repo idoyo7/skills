@@ -1,6 +1,6 @@
 ---
 name: wwe
-version: "1.3.3"
+version: "1.3.4"
 description: 작업 디렉토리의 마크다운 문서(.md)에서 Claude·GPT가 남긴 티를 걷어내는 스킬. 두 축을 함께 잡는다 — (1) 문장 축은 humanize-korean 파이프라인(번역투·피동 남용·명사화 누적·결산 lexicon 70패턴)을 재사용하고, (2) 기존 taxonomy에 없는 문서 레이아웃 지문 축(볼드리드 불릿 `- **X**: 설명`, 상태 이모지 ✅⚠️, 서두 TL;DR 박스, 섹션마다 붙은 `---`, 마지막 "정리" 재진술 섹션, 강조용 인용블록, 표 남용·섹션 골격 균질성·삼분 편향)을 L1~L14 지표로 결정적으로 측정한다. 정책은 "장식만 제거, 구조는 보존" — 코드블록·frontmatter·표·링크·헤딩 텍스트·불릿 개수는 바이트 단위로 지킨다. 윤문하는 것도 Claude이므로 지문 점수를 윤문 전후로 기계 측정해 하락을 강제한다(지문 재생산 차단). 기본은 **경제 모드**(파일당 monolith LLM 1콜 상한 — 게이트가 문제를 잡아도 자동 재시도 대신 보류 목록에 기록하고 `정밀 모드`로만 해제)이고, 중단된 실행은 **이어서/재개**로 이미 낸 LLM 콜을 다시 지불하지 않고 이어간다. 여러 파일 일괄 처리, 대상 자동 분류(한글 비율·산문량·에이전트 지시 파일 회피), 삼중 게이트 검증, diff 미리보기 후 승인 적용까지 한 흐름. v1.3부터 작성자 반복 구절 검출과 시드 기반 제거를 지원한다 — `scripts/author_repeat.py`가 코퍼스·시드 파일로 반복 표현을 잡고, gen-block으로 윤문 지침에 주입해 같은 구절이 재생산되지 않도록 막는다. 트리거 — "wwe", "MD 문서 윤문", "마크다운 윤문", "README 윤문", "문서 AI 티 제거", "Claude 티 나는 문서", "AI가 쓴 게시물 티 제거", "docs 윤문", "이 디렉토리 문서 다듬어", "기술문서 자연스럽게", "humanize docs", "문서 번역투 제거", "AI 레이아웃 지문". 평문 텍스트 한 덩어리 윤문은 humanize-korean(/humanize), 문서 구조·내용 자체를 다시 쓰는 작업은 별도 집필 스킬.
 ---
 
@@ -69,14 +69,33 @@ wwe v1.3 — 대상 {N}개 파일 / run_id: {YYYY-MM-DD-NNN}
 # {run_id}/{slug}와 같은 자리표시자 관례)에 이 값이 그대로 들어간다.
 HD="{이 스킬의 base directory}"
 [ -f "$HD/scripts/md_shield.py" ] || { echo "ERROR: HD 경로가 스킬 디렉토리가 아니다: $HD"; exit 1; }
-HK=$(ls -d "$HOME"/.claude/plugins/cache/im-not-ai/humanize-korean/*/ 2>/dev/null | sort -V | tail -1)
-[ -z "$HK" ] && [ -d "$HOME/.claude/skills/humanize-korean" ] && HK=$(cd -P "$HOME/.claude/skills/humanize-korean/../../.." 2>/dev/null && pwd)
-[ -z "$HK" ] && [ -d "$HOME/.claude/plugins/marketplaces/im-not-ai/.claude/skills/humanize-korean" ] && HK="$HOME/.claude/plugins/marketplaces/im-not-ai"
+# HK = humanize-korean 저장소(플러그인) 루트 — scripts/ 가 사는 곳. 스킬 트리 위치는
+# 배포판마다 다르므로(구 `.claude/skills/humanize-korean`, 신 `skills/humanize-korean`)
+# 고정된 횟수로 상위 디렉터리를 올라가지 않는다 — 고정 깊이는 레이아웃이 바뀌면 조용히
+# 엉뚱한 곳을 가리킨다. 대신 `.claude-plugin/` 을 만날 때까지 거슬러 올라가 루트를 찾는다.
+# `cd -P` 가 핵심이다: 심링크 설치에서는 스킬 디렉터리가 저장소를 가리키는 심링크라,
+# 그냥 올라가면 셸이 논리 경로를 유지해 홈 디렉터리로 새어나간다. 심링크가 끊겨 있으면
+# (`cd` 실패) 링크 대상 문자열을 그대로 타고 올라가 그쪽 저장소 루트를 찾는다.
+HK=$(ls -d "$HOME"/.claude/plugins/cache/im-not-ai/humanize-korean/*/ 2>/dev/null | sort -V | tail -1); HK="${HK%/}"
+if [ -z "$HK" ]; then
+  for c in "$HOME/.claude/skills/humanize-korean" "$(readlink "$HOME/.claude/skills/humanize-korean" 2>/dev/null)" "$HOME/.claude/plugins/marketplaces/im-not-ai"; do
+    [ -n "$c" ] || continue
+    d=$(cd -P "$c" 2>/dev/null && pwd) || d="$c"
+    while [ "$d" != "/" ] && [ "$d" != "." ] && [ ! -d "$d/.claude-plugin" ]; do d=$(dirname "$d"); done
+    [ -d "$d/.claude-plugin" ] && { HK="$d"; break; }
+  done
+fi
 [ -z "$HK" ] && { echo "ERROR: humanize-korean 미설치 — /plugin install humanize-korean@im-not-ai"; exit 1; }
 # HK 가 비어 있지 않아도 엉뚱한 곳을 가리킬 수 있다 — 실제 스크립트 존재로 검증한다.
 # 이 가드가 없으면 잘못된 HK 로 Phase 4 까지 진행한 뒤 거기서 죽는다.
 [ -f "$HK/scripts/prepare_monolith_input.py" ] || { echo "ERROR: HK 에 humanize-korean 스크립트가 없다: $HK"; exit 1; }
-QUICK_RULES="$HK/.claude/skills/humanize-korean/references/quick-rules.md"
+# quick-rules 는 저장소 루트가 아니라 스킬 디렉터리 밑에 산다 — 그 위치가 레이아웃마다
+# 다르므로(신 `skills/` · 구 `.claude/skills/`) 실제로 파일이 있는 쪽을 골라 잡는다.
+QUICK_RULES=""
+for c in "$HK/skills/humanize-korean" "$HK/.claude/skills/humanize-korean"; do
+  [ -f "$c/references/quick-rules.md" ] && { QUICK_RULES="$c/references/quick-rules.md"; break; }
+done
+[ -n "$QUICK_RULES" ] || { echo "ERROR: quick-rules.md 를 찾지 못했다(skills/ · .claude/skills/ 양쪽 모두 없음): $HK"; exit 1; }
 echo "HD=$HD"; echo "HK=$HK"; ls "$QUICK_RULES" "$HK/scripts/prepare_monolith_input.py" "$HK/scripts/verify_gates.py"
 ```
 
@@ -191,9 +210,17 @@ python3 "$HD/scripts/llm_signature.py" score \
 # 경로를 주면 워크스페이스가 아니라 플러그인 설치 폴더 밑을 찾다가 조용히 실패한다.
 D="$PWD/_workspace/docs-{run_id}/{slug}"
 HD="{이 스킬의 base directory}"
-HK=$(ls -d "$HOME"/.claude/plugins/cache/im-not-ai/humanize-korean/*/ 2>/dev/null | sort -V | tail -1)
-[ -z "$HK" ] && [ -d "$HOME/.claude/skills/humanize-korean" ] && HK=$(cd -P "$HOME/.claude/skills/humanize-korean/../../.." 2>/dev/null && pwd)
-[ -z "$HK" ] && [ -d "$HOME/.claude/plugins/marketplaces/im-not-ai/.claude/skills/humanize-korean" ] && HK="$HOME/.claude/plugins/marketplaces/im-not-ai"
+# HK 재탐색 — Phase 0과 같은 방식이다. `.claude-plugin/` 을 만날 때까지 거슬러 올라가
+# 저장소 루트를 찾는다(고정 깊이 상승은 레이아웃이 바뀌면 엉뚱한 곳을 가리킨다).
+HK=$(ls -d "$HOME"/.claude/plugins/cache/im-not-ai/humanize-korean/*/ 2>/dev/null | sort -V | tail -1); HK="${HK%/}"
+if [ -z "$HK" ]; then
+  for c in "$HOME/.claude/skills/humanize-korean" "$(readlink "$HOME/.claude/skills/humanize-korean" 2>/dev/null)" "$HOME/.claude/plugins/marketplaces/im-not-ai"; do
+    [ -n "$c" ] || continue
+    d=$(cd -P "$c" 2>/dev/null && pwd) || d="$c"
+    while [ "$d" != "/" ] && [ "$d" != "." ] && [ ! -d "$d/.claude-plugin" ]; do d=$(dirname "$d"); done
+    [ -d "$d/.claude-plugin" ] && { HK="$d"; break; }
+  done
+fi
 . "$PWD/_workspace/docs-{run_id}/options.env" || { echo "ERROR: options.env 없음 — Phase 1의 옵션 해석 블록을 먼저 실행하라"; exit 1; }
 
 # 재개: 이전 라운드에서 이미 humanize-diagnostician 산출물이 02_diagnosis.md 뒤에 붙어
@@ -349,9 +376,17 @@ Phase 6과 Phase 7은 서로 다른 Bash 호출(새 셸)이라 위 `$REWRITE_EXI
 # Phase 6과 이 Phase는 서로 다른 Bash 호출(새 셸)이라 $D/$HD/$HK 를 다시 채워야 한다.
 D="$PWD/_workspace/docs-{run_id}/{slug}"
 HD="{이 스킬의 base directory}"
-HK=$(ls -d "$HOME"/.claude/plugins/cache/im-not-ai/humanize-korean/*/ 2>/dev/null | sort -V | tail -1)
-[ -z "$HK" ] && [ -d "$HOME/.claude/skills/humanize-korean" ] && HK=$(cd -P "$HOME/.claude/skills/humanize-korean/../../.." 2>/dev/null && pwd)
-[ -z "$HK" ] && [ -d "$HOME/.claude/plugins/marketplaces/im-not-ai/.claude/skills/humanize-korean" ] && HK="$HOME/.claude/plugins/marketplaces/im-not-ai"
+# HK 재탐색 — Phase 0과 같은 방식이다. `.claude-plugin/` 을 만날 때까지 거슬러 올라가
+# 저장소 루트를 찾는다(고정 깊이 상승은 레이아웃이 바뀌면 엉뚱한 곳을 가리킨다).
+HK=$(ls -d "$HOME"/.claude/plugins/cache/im-not-ai/humanize-korean/*/ 2>/dev/null | sort -V | tail -1); HK="${HK%/}"
+if [ -z "$HK" ]; then
+  for c in "$HOME/.claude/skills/humanize-korean" "$(readlink "$HOME/.claude/skills/humanize-korean" 2>/dev/null)" "$HOME/.claude/plugins/marketplaces/im-not-ai"; do
+    [ -n "$c" ] || continue
+    d=$(cd -P "$c" 2>/dev/null && pwd) || d="$c"
+    while [ "$d" != "/" ] && [ "$d" != "." ] && [ ! -d "$d/.claude-plugin" ]; do d=$(dirname "$d"); done
+    [ -d "$d/.claude-plugin" ] && { HK="$d"; break; }
+  done
+fi
 . "$PWD/_workspace/docs-{run_id}/options.env" || { echo "ERROR: options.env 없음 — Phase 1의 옵션 해석 블록을 먼저 실행하라"; exit 1; }
 echo "OPTIONS: HEADING_EDIT=$HEADING_EDIT CONDENSE=$CONDENSE STRICT=$STRICT"   # 재개 시에도 이번 라운드에 실제로 적용 중인 옵션 값을 매번 눈에 보이게 남긴다(Phase 0 참고)
 

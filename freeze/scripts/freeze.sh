@@ -239,6 +239,40 @@ console.log(Math.floor(t / 1000));
 }
 
 # cwd 로 현재 세션 uuid 자동 탐지 (해당 프로젝트 디렉토리의 최신 jsonl)
+#
+# ⚠ 이 함수는 반드시 **명령 치환**(`x=$(detect_session ...)`) 또는 `&&`/`||` 문맥에서만
+# 불러라. 평문 statement 로 부르면(예: `detect_session "$cwd" > "$f"`) 큰 프로젝트
+# 디렉토리에서 그 자리에서 죽는다 — 실측 10/10, rc=141.
+#
+# 근거: 아래 `ls -t "$dir"/*.jsonl | head -1` 은 SIGPIPE 를 실제로 맞는다. head -1 은
+# 첫 줄을 읽고 즉시 파이프 읽는 쪽을 닫고, ls 는 줄마다 write 하므로 출력이 파이프
+# 용량(이 머신 실측 65536바이트)을 넘으면 남은 write 가 EPIPE/SIGPIPE 를 맞는다
+# (3000파일·852KB 디렉토리에서 PIPESTATUS[0]=141, 10/10). pipefail 이 그 141 을
+# `latest=$(...)` 대입의 rc 로 올린다.
+#
+# 지금 도달 불가인 이유는 두 겹인데, **둘 다 흔히 오해되는 것과 다르다**:
+#   1) 이 파이프라인은 함수의 마지막 명령이 아니다 — 끝은 basename 이라 141 이 함수의
+#      rc 로 새어나가지 않는다. wfledger.sh 의 ledger_field() 는 같은 파이프 모양인데
+#      파이프가 함수의 마지막이라 141 이 그대로 함수 rc 가 되고, 그쪽은 맨 대입 호출에서
+#      실제로 죽는다(30/30). 그 함수에도 같은 성격의 주석을 달아뒀다 — 한쪽만 고치지 마라.
+#   2) 호출 지점 둘(아래 cmd_reserve 의 resume/ledger 분기)이 모두 `$( )` 안이고, 이
+#      머신의 bash(3.2.57, macOS 시스템 bash)는 **명령 치환 서브셸 안에서 set -e 를
+#      강제하지 않는다**(실측 대조: 같은 함수를 평문으로 부르면 errexit 가 걸려 죽고,
+#      `$( )` 안에서 부르면 내부 대입 rc 가 141 이어도 본문이 끝까지 돈다). 그래서 141 이
+#      서브셸 안에 갇힌다.
+#      → 따라서 `session=$(detect_session ...)` 는 뒤에 `|| return 1` 이 있든 없든 죽지
+#        않는다(뒤를 떼어낸 변이로 reserve 15/15 rc=0, 현재 형태도 15/15 rc=0).
+#        지금 지켜주는 건 `||` 가 아니라 명령 치환 서브셸이다. 이 차이를 헷갈리면
+#        "`||` 만 붙여두면 안전하다" 는 잘못된 근거를 믿게 된다.
+#   3) 실 데이터 여유도 크다 — 이 머신에서 가장 큰 프로젝트 디렉토리의 `ls -t` 출력이
+#      2986바이트, 임계의 4.6% 다.
+#
+# 그래서 코드는 그대로 둔다. 다만 위 조건 중 하나만 어긋나면 곧바로 도달한다:
+#   - 새 호출 지점이 명령 치환 밖(평문 statement)으로 들어온다 → 10/10 사망.
+#   - basename 을 걷어내 파이프라인이 함수의 마지막이 된다 → ledger_field 와 같은
+#     30/30 사망 경로가 된다.
+#   - 명령 치환 안에서도 set -e 를 강제하는 bash 로 올라간다 → 이 머신엔 3.2 뿐이라
+#     확인하지 못했다. 그 환경에선 지금의 명령 치환 호출도 위험해진다.
 detect_session() {
   local cwd="$1"
   local slug; slug=$(echo "$cwd" | sed 's/[^A-Za-z0-9-]/-/g')
@@ -271,6 +305,7 @@ cmd_reserve() {
   # pad 기본값은 여기서 정하지 않는다 — auto 냐 명시 시각이냐에 따라 resolve_at 이 결정한다.
   # mode: resume(기본, 대화 전체 --resume) | ledger(원장 한 장만 실은 신선한 세션).
   local at="" cwd="" handoff="" session="" job="" perm="bypassPermissions" pad="" mode="resume" created_at=""
+  local chain="" chain_left="" via=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --at) at="$2"; shift 2;;
@@ -281,6 +316,13 @@ cmd_reserve() {
       --permission-mode) perm="$2"; shift 2;;
       --pad) pad="$2"; shift 2;;
       --mode) mode="$2"; shift 2;;
+      # 내부 전용(문서화 안 함) — cmd_arm 이 체인 정보를 넘길 때만 쓴다. 예전엔 arm 이
+      # reserve 가 돌아온 뒤 같은 파일에 두 번째 read-modify-write 로 이 세 필드를
+      # 심었는데, 그 쓰기가 이미 기동한 슬리퍼의 첫 읽기와 겹치는 레이스였다(blocker,
+      # _node.sh (d) 주석 참고). 인자로 받아 아래 단일 쓰기에 합친다.
+      --chain) chain="$2"; shift 2;;
+      --chain-left) chain_left="$2"; shift 2;;
+      --via) via="$2"; shift 2;;
       # 내부 전용(문서화 안 함) — thaw.sh 의 체인 재무장이 부모 예약의 created_at 을
       # 자식에게 그대로 물려줄 때만 쓴다. major 3: handoff 로 키잉된 완료 신호를
       # "이 예약의 created_at 보다 오래됐으면 무시" 로 걸러내려면, 체인으로 이어지는
@@ -324,20 +366,36 @@ cmd_reserve() {
   # calls.log 에 재개 호출이 서로 다른 pid 로 두 줄 찍힌다). 새 슬리퍼를 띄우기
   # 전에 기존 sleeper.pid 가 살아있으면 정리한다.
   reap_stale_sleeper "$dir" "$job"
-  node -e '
-const [p, job, session, cwd, handoff, epoch, perm, mode, pad, createdAt] = process.argv.slice(1);
-require("fs").writeFileSync(p, JSON.stringify({
+  # reservation.json 은 여기서 딱 한 번만 쓴다. 슬리퍼는 이 유일한 쓰기가 끝난 뒤에
+  # 띄우고(아래 spawn_sleeper), 체인 필드도 이 쓰기에 함께 싣는다 — 슬리퍼가 기동해서
+  # field() 로 이 파일을 읽는 동안 다른 쓰기가 겹칠 창 자체를 없앤다.
+  # 필드 이름·값·JSON 키 순서는 예전(reserve 가 쓰고 arm 이 뒤에 세 필드를 덧붙인 형태)과
+  # 같게 유지한다 — 기존 테스트가 이 필드들을 단언한다.
+  node -e "$FREEZE_JS_ATOMIC"'
+const [p, job, session, cwd, handoff, epoch, perm, mode, pad, createdAt, chain, chainLeft, via] = process.argv.slice(1);
+const d = {
   job, session_id: session, cwd, handoff,
   resume_at: parseInt(epoch), created_at: createdAt ? parseInt(createdAt) : Date.now(),
   permission_mode: perm, mode, pad: parseInt(pad), status: "frozen"
-}, null, 2));
-' "$dir/reservation.json" "$job" "$session" "$cwd" "$handoff" "$epoch" "$perm" "$mode" "$effective_pad" "$created_at"
+};
+// 빈 문자열이면 필드를 아예 만들지 않는다 — reserve 로 걸린 예약에는 예전처럼 chain 계열
+// 필드가 없어야 한다(thaw.sh 가 그 부재로 "체인 아님"을 판정한다).
+// "0" 은 빈 문자열이 아니므로 --chain-left 0 은 그대로 0 으로 들어간다.
+if (chain) d.chain = parseInt(chain);
+if (chainLeft) d.chain_left = parseInt(chainLeft);
+if (via) d.via = via;
+writeJsonAtomic(p, d);
+' "$dir/reservation.json" "$job" "$session" "$cwd" "$handoff" "$epoch" "$perm" "$mode" "$effective_pad" \
+  "$created_at" "$chain" "$chain_left" "$via"
 
   spawn_sleeper "$job" "$dir"
   echo "얼음 — job=$job session=${session:-(미탐지)} mode=$mode 땡=$(fmt_epoch "$epoch" '+%m/%d %H:%M') ($(( (epoch - $(date +%s)) / 60 ))분 후)"
 }
 
-job_field() { node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1]))[process.argv[2]] ?? "")' "$1" "$2"; }
+# 읽기는 thaw.sh 의 field() 와 같은 공용 스크립트를 쓴다 — 파싱 실패 시 짧게 재시도하고,
+# 끝까지 실패하면 빈 문자열이 아니라 비영 종료코드를 낸다(_node.sh (d) 참고).
+# set -e 아래라 호출자는 조용한 빈 값 대신 즉시 실패를 본다.
+job_field() { node -e "$FREEZE_JS_FIELD" "$1" "$2"; }
 
 # 프로세스 생존 판정 — kill -0 은 좀비(미리핑)도 살아있다고 답하므로 ps 상태로 본다
 pid_alive() {
@@ -392,10 +450,10 @@ cmd_cancel() {
   [ -f "$dir/reservation.json" ] || { echo "ERROR: 예약 없음: $job" >&2; return 1; }
   local pid; pid=$(cat "$dir/sleeper.pid" 2>/dev/null || true)
   [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
-  node -e '
+  node -e "$FREEZE_JS_ATOMIC"'
 const fs = require("fs"), p = process.argv[1];
 const d = JSON.parse(fs.readFileSync(p)); d.status = "cancelled";
-fs.writeFileSync(p, JSON.stringify(d, null, 2));
+writeJsonAtomic(p, d);
 ' "$dir/reservation.json"
   echo "취소됨: $job"
 }
@@ -452,16 +510,15 @@ cmd_arm() {
   # macOS 기본 bash 는 3.2 — set -u 아래서 빈 배열의 "${extra[@]}" 를 unbound variable 로
   # 터뜨린다(bash 4.4 에서 고쳐진 동작). arm 을 --pad/--session/--created-at 없이 부르면
   # extra 가 비므로 항상 이 경로를 탄다. ${arr[@]+...} 로 "비었으면 아무것도 전개 안 함"을 명시한다.
+  # 체인 정보는 reserve 에 인자로 넘겨 reservation.json 의 단일 쓰기에 함께 싣는다.
+  # 예전엔 reserve 가 돌아온 뒤(=슬리퍼가 이미 뜬 뒤) 같은 파일에 두 번째
+  # read-modify-write 로 심었는데, writeFileSync 의 truncate~write 창이 슬리퍼의 첫
+  # field() 읽기와 겹쳐 잘린 JSON 을 읽히는 레이스였다(blocker — arm 회당 재현율 약 3%,
+  # _node.sh (d) 주석에 측정치와 파급 경로). 여기서 파일을 다시 열지 않는 것 자체가
+  # 그 레이스의 수정이므로, 편의를 이유로 쓰기를 되살리지 마라.
   cmd_reserve --at "$at" --cwd "$cwd" --handoff "$handoff" --permission-mode "$perm" \
-    --job "$job" --mode "$mode" ${extra[@]+"${extra[@]}"} || return 1
-  # 방금 만든 예약(자기 job 이름으로 확정된 경로)에만 체인 정보를 심는다
-  local res="$STATE_ROOT/$job/reservation.json"
-  node -e '
-const fs = require("fs"), [p, left] = process.argv.slice(1);
-const d = JSON.parse(fs.readFileSync(p));
-d.chain = 1; d.chain_left = parseInt(left); d.via = "arm";
-fs.writeFileSync(p, JSON.stringify(d, null, 2));
-' "$res" "$chain_left"
+    --job "$job" --mode "$mode" --chain 1 --chain-left "$chain_left" --via arm \
+    ${extra[@]+"${extra[@]}"} || return 1
   echo "무장 완료 — job=$job 남은 쿼터를 계속 쓰다가 막히면 예약분이 잇는다 (체인 ${chain_left}회). 먼저 끝나면: freeze.sh done --handoff $handoff"
 }
 
@@ -482,6 +539,17 @@ fs.writeFileSync(p, JSON.stringify(d, null, 2));
 # 끝난 작업을 다시 연다. 그래서 handoff 로 키잉된 신호도 함께 남긴다 — job 이 아니라
 # handoff 해시로 경로가 정해지므로 "이 job 이 호출 시점에 존재했는가"와 무관하게,
 # 나중에 태어난 예약도 자기 대기 루프에서 이 파일을 그냥 찾아서 본다.
+#
+# 아래 handoff 마커 쓰기의 위치는 이렇게 고정돼 있다 — (a) 활성 예약 매칭 여부와
+# 무관하게 `if` 밖에서, (b) 매칭 0건일 때 내는 return 1 보다 **먼저** 쓴다. 이 위치는
+# 그대로 두는 게 맞다. 다만 절 (a) 가 무엇을 막는지는 정확히 적어야 한다: 절 (b) 는
+# "매칭 0건이어도 아직 태어나지 않은 다음 창에 신호를 남긴다" 는 위 major 3 의 본체지만,
+# 절 (a) 는 지금 도달 가능한 파손 경로의 방어가 아니라 방어적 여유분이다. 예전 주석은
+# "thaw.sh 의 이중 재개 방지가 이 두 가지에 의존한다" 고 적었는데, 적대적 검증이 그
+# 시나리오(계약 위반 변이 E: 마커를 marked>0 일 때만 / F: return 1 뒤로)를 그대로 돌려
+# 반증했다 — 프로브 구간에 done 이 도착하는 그 시점에도 부모 예약은 아직 frozen 이라
+# 아래 루프가 늘 1건을 매칭해 marked=1 이 된다. 상세와 재현 절차는
+# thaw.sh:release_next_job 주석에 있다(같은 검증을 반복하기 전에 먼저 읽어라).
 # 2차에서 이 방식을 버린 이유는 arm 이 handoff 마커를 무조건 지워서(재사용 대비)
 # 아직 살아있는 다른 예약의 신호까지 날렸기 때문 — 이번엔 지우지 않는다. 대신
 # 마커에 타임스탬프를 넣고, 읽는 쪽(thaw.sh)이 "내 예약의 created_at 보다 오래된
