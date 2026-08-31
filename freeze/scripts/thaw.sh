@@ -6,10 +6,14 @@ set -uo pipefail
 JOB="${1:?usage: thaw.sh <job>}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/_node.sh"
+source "$SCRIPT_DIR/_claude.sh"
 STATE_ROOT="${FREEZE_STATE_DIR:-$HOME/.local/state/freeze}"
-CLAUDE_BIN="${FREEZE_CLAUDE_BIN:-$HOME/.local/bin/claude}"
 PROBE_INTERVAL="${FREEZE_PROBE_INTERVAL:-900}"   # 한도 미해제 시 재시도 간격(초)
 PROBE_MAX="${FREEZE_PROBE_MAX:-12}"              # 최대 재시도 횟수
+# MAJOR H — 체인이 있으면(아래 "3) 땡" 절에서 채워진다) run_probe() 가 이 시각을
+# 넘기면서까지 재시도하지 않는다. set -u 아래서 run_probe 가 이 변수를 참조하므로
+# (체인이 없을 때도 참조는 하니) 빈 문자열로 미리 선언해둔다.
+retry_deadline=""
 
 DIR="$STATE_ROOT/$JOB"
 RES="$DIR/reservation.json"
@@ -54,6 +58,16 @@ writeJsonAtomic(p, d);
 ' "$RES" "$1" || echo "[$(date '+%F %T')] WARN: status 갱신 실패 ($1) — $RES" >&2
 }
 
+# claude 실행 파일 탐색 — reserve 시점에 이미 resolve_claude_bin 으로 한 번 검증했지만,
+# 슬리퍼는 독립 프로세스로 몇 시간 뒤(땡) 깨어나므로 그 사이 PATH·설치가 바뀌었을 수
+# 있다. set_status 를 쓸 수 있어야 실패를 reservation.json 에도 남기므로 여기(정의 뒤)로 둔다.
+CLAUDE_BIN=$(resolve_claude_bin) || {
+  set_status "failed"
+  echo "[$(date '+%F %T')] claude 실행 파일을 찾지 못해 재개 포기 — job=$JOB" >&2
+  exit 1
+}
+
+
 # `X=$(field ...) || die` 는 성립한다 — 대입만 있는 명령의 종료코드는 명령 치환의
 # 종료코드다. 이 스크립트엔 set -e 가 없으므로(백그라운드 슬리퍼라 의도된 선택) 이
 # 명시적 || 없이는 실패가 조용히 지나간다.
@@ -71,6 +85,8 @@ PERM=$(field permission_mode) || die "reservation.json 을 읽지 못했다(perm
 [ -n "$PERM" ] || PERM="bypassPermissions"   # 구버전 reservation 호환
 MODE=$(field mode) || die "reservation.json 을 읽지 못했다(mode): $RES"
 [ -n "$MODE" ] || MODE="resume"              # 구버전 reservation 호환
+WAKER=$(field waker)
+[ -n "$WAKER" ] || WAKER="bash"              # 구버전 reservation 호환
 
 # 완료 신호 — arm 으로 미리 걸어둔 예약은, 작업이 먼저 끝나면 헛돌지 않고 조용히 종료해야 한다.
 # 메인 세션이 `freeze.sh done --handoff <경로>` 로 남긴 마커를 본다. 두 종류가 있다:
@@ -222,25 +238,67 @@ while :; do
   sleep $(( remain < 60 ? remain : 60 )) & wait $!
 done
 
-# 2) haiku 프로브 — 한도가 실제로 풀렸는지 몇 토큰으로 확인
-probe_ok=0
-for i in $(seq 1 "$PROBE_MAX"); do
-  cur_status=$(field status) || die "프로브 중 reservation.json 을 읽지 못했다(status): $RES"
-  [ "$cur_status" = "cancelled" ] && { echo "취소됨 — 종료"; exit 0; }
-  is_done_signaled && { set_status "completed_early"; echo "완료 신호 감지 — 재개 없이 종료"; exit 0; }
-  if "$CLAUDE_BIN" -p --model haiku "ok" > "$DIR/probe.log" 2>&1; then
-    probe_ok=1
-    echo "[$(date '+%F %T')] 프로브 통과 (시도 $i)"
-    break
+# 2) haiku 프로브 — 한도가 실제로 풀렸는지 몇 토큰으로 확인. waker=bash 의 기본 경로이자
+# waker=codex 가 실패했을 때의 폴백 첫 단계라서 함수로 뺐다(아래 codex 분기 참고).
+#
+# MAJOR H — retry_deadline 이 설정돼 있으면(체인이 있어 다음 창이 예약돼 있으면) 그
+# 시각을 넘겨서까지 재시도하지 않는다. codex 경로 폴백(codex 자체 재시도로 최대
+# PROBE_MAX×PROBE_INTERVAL 을 이미 썼을 수 있는 상태에서 또 run_probe+run_resume 을
+# 도는 경우)이 이 시각을 넘기면, 이미 깨어난(또는 곧 깨어날) 다음 창이 같은 세션에
+# 동시에 --resume 을 걸 위험이 생긴다 — bash 기본 경로(PROBE_MAX×PROBE_INTERVAL 기본
+# 3시간 < 5시간 창)는 원래 이 문제가 없어 retry_deadline 이 아직 비어있는 시점에
+# 불려도(아래 "2) haiku 프로브" 절 참고) 안전하다.
+run_probe() {
+  probe_ok=0
+  local max="$PROBE_MAX"
+  if [ -n "$retry_deadline" ]; then
+    local budget_left=$(( retry_deadline - $(date +%s) ))
+    if [ "$budget_left" -le 0 ]; then
+      echo "[$(date '+%F %T')] 폴백 예산 초과 — 다음 창(땡=$(fmt_epoch "$retry_deadline" '+%F %T'))이 이미 깨어날 시각이라 재시도 없이 포기, 그 창에 맡긴다"
+      set_status "probe_failed"
+      exit 1
+    fi
+    local dyn_max=$(( budget_left / PROBE_INTERVAL ))
+    [ "$dyn_max" -lt 1 ] && dyn_max=1
+    [ "$dyn_max" -lt "$max" ] && max="$dyn_max"
   fi
-  echo "[$(date '+%F %T')] 프로브 실패 (시도 $i/$PROBE_MAX) — ${PROBE_INTERVAL}s 후 재시도"
-  sleep "$PROBE_INTERVAL" & wait $!
-done
-if [ "$probe_ok" != 1 ]; then
-  set_status "probe_failed"
-  echo "[$(date '+%F %T')] 프로브 ${PROBE_MAX}회 실패 — 포기. probe.log 확인"
-  exit 1
+  for i in $(seq 1 "$max"); do
+    # 파싱 실패를 빈 문자열로 흘리면 "취소 아님" 으로 오판한다 — fail-closed 로 죽인다(1.1.3).
+    local cur_status; cur_status=$(field status) || die "프로브 중 reservation.json 을 읽지 못했다(status): $RES"
+    if [ "$cur_status" = "cancelled" ]; then
+      echo "취소됨 — 종료"
+      # codex 실패 후 폴백 구간에서는 이미 다음 창(NEXT_JOB)이 선무장돼 있을 수 있다
+      # (아래 "3) 땡" 절 참고). 여기서 취소되면서 그 자식을 안 지우면 남아서 다음
+      # 창에서 이미 끝난 작업을 다시 연다(MAJOR 2 회귀) — 있으면 같이 취소한다.
+      release_next_job
+      exit 0
+    fi
+    is_done_signaled && { set_status "completed_early"; echo "완료 신호 감지 — 재개 없이 종료"; exit 0; }
+    # 매 시도 앞에서도 데드라인을 다시 본다 — sleep 도중 시간이 흘러 넘어갈 수 있다.
+    if [ -n "$retry_deadline" ] && [ "$(date +%s)" -ge "$retry_deadline" ]; then
+      echo "[$(date '+%F %T')] 폴백 예산 초과(대기 중 다음 창 시각 도달) — 재시도 없이 포기, 그 창에 맡긴다"
+      set_status "probe_failed"
+      exit 1
+    fi
+    if "$CLAUDE_BIN" -p --model haiku "ok" > "$DIR/probe.log" 2>&1; then
+      probe_ok=1
+      echo "[$(date '+%F %T')] 프로브 통과 (시도 $i)"
+      break
+    fi
+    echo "[$(date '+%F %T')] 프로브 실패 (시도 $i/$max) — ${PROBE_INTERVAL}s 후 재시도"
+    sleep "$PROBE_INTERVAL" & wait $!
+  done
+  if [ "$probe_ok" != 1 ]; then
+    set_status "probe_failed"
+    echo "[$(date '+%F %T')] 프로브 ${max}회 실패 — 포기. probe.log 확인"
+    exit 1
+  fi
+}
+if [ "$WAKER" = "bash" ]; then
+  run_probe
 fi
+# waker=codex 는 여기서 프로브를 건너뛴다 — Anthropic 쿼터를 건드리지 않고 codex-wake.sh
+# 가 판단을 대신한다(아래 "3) 땡" 절 참고). codex 가 실패하면 그때 가서 run_probe 를 부른다.
 
 # 3) 땡 — 세션 재개
 # 재무장 체인: 이 창 안에 못 끝낼 가능성에 대비해, 재개를 부르기 **전에** thaw 자신이
@@ -303,7 +361,18 @@ if [ "$CHAIN" = "1" ] && [ "$CHAIN_LEFT" -gt 0 ]; then
   if bash "$SCRIPT_DIR/freeze.sh" arm --cwd "$CWD" --handoff "$HANDOFF" --job "$NEXT_JOB" \
       --chain-left "$NEXT_CHAIN_LEFT" --permission-mode "$PERM" --mode "$MODE" \
       --at "$NEXT_AT" --pad "$PAD" --session "$SESSION" --created-at "$JOB_CREATED_AT" \
+      --waker "$WAKER" \
       >> "$DIR/thaw.log" 2>&1; then
+    # 부모(이 예약) 에 next_job 을 남긴다 — freeze.sh cmd_cancel 이 이 job 을 취소할 때
+    # 체인 전체(이 자식, 그 자식의 자식 …)로 취소를 따라가게 하기 위함이다(MAJOR 2
+    # 대응). 이 필드가 없으면 폴백 중 취소된 job 의 선무장 자식이 고아로 남아 다음
+    # 창에서 이미 끝난 작업을 다시 열 수 있다.
+    node -e '
+const fs = require("fs"), [p, nj] = process.argv.slice(1);
+const d = JSON.parse(fs.readFileSync(p));
+d.next_job = nj;
+fs.writeFileSync(p, JSON.stringify(d, null, 2));
+' "$RES" "$NEXT_JOB"
     CHAIN_NOTE="
 
 다음 창은 이미 자동으로 예약해 뒀다(job=$NEXT_JOB, 남은 체인 ${NEXT_CHAIN_LEFT}회) — 직접 arm 을 걸 필요는 없다."
@@ -319,6 +388,17 @@ writeJsonAtomic(p, d);
   fi
 fi
 
+# MAJOR H — 다음 창이 실제로 선무장됐을 때만 예산을 자른다. 선무장에 실패했거나(위
+# else 분기, NEXT_JOB="") 애초에 체인이 없으면(CHAIN!=1) 지킬 다음 창이 없으므로
+# 지금 예산(PROBE_MAX×PROBE_INTERVAL)을 그대로 써도 안전하다.
+[ -n "$NEXT_JOB" ] && retry_deadline="$NEXT_AT"
+# 테스트 전용 — retry_deadline 을 강제로 오버라이드한다. 실제 NEXT_AT 는 항상
+# RESUME_AT+5시간(resolve_at 의 --at 하한이 "지금부터 5분 전까지"라 NEXT_AT 는 최소
+# 지금부터 약 4.9시간 뒤다)이라, 현실적인 테스트 실행 시간 안에서는 "이미 넘긴
+# 데드라인"을 자연스러운 타이밍으로 재현할 방법이 없다. 운영 경로에서 이 변수를
+# 쓸 이유는 없다 — freeze/tests/test_freeze.sh 참고(MAJOR H 회귀).
+[ -n "${FREEZE_TEST_RETRY_DEADLINE:-}" ] && retry_deadline="$FREEZE_TEST_RETRY_DEADLINE"
+
 # 선무장해 둔 다음 창을 해제한다.
 #
 # 반드시 부모의 status 를 완료(completed_early / done)로 바꾸기 **전에** 부른다. 순서를
@@ -327,12 +407,18 @@ fi
 # 곧바로 자식 status 를 읽어 frozen 을 보고 빨개졌다. 이 순서로 두면
 # "부모가 완료로 보인다 ⇒ 자식은 이미 해제됐다" 가 불변식이 되어 그 창이 사라진다.
 # 이 불변식의 게이트는 test_freeze.sh 의 "체인: ... cancel 이 부모 status 전환보다 먼저"
-# 세 섹션이다 — 아래 호출 지점 셋에 하나씩 대응한다(프로브 구간 분기 / ledger 완료 게이트
-# 분기 / 재개 이후 분기). status 를 폴링해 중간 상태를 목격하려는 방식은 게이트로 쓸 수
-# 없다(순서를 되돌린 변이로 스위트를 부하 하 8회 돌려 1회만 빨개졌다. 12.5%). 그래서 세
-# 섹션 모두 cancel 과 set_status 두 쓰기의 node 호출 순서를 직접 관측한다.
-# 호출 지점을 넷째로 늘리면 게이트 섹션도 같이 늘려라 — 지점만 늘리면 그 지점은 무보호가
+# 세 섹션이다 — bash 경로의 호출 지점 셋에 하나씩 대응한다(프로브 구간 분기 / ledger 완료
+# 게이트 분기 / 재개 이후 분기). status 를 폴링해 중간 상태를 목격하려는 방식은 게이트로
+# 쓸 수 없다(순서를 되돌린 변이로 스위트를 부하 하 8회 돌려 1회만 빨개졌다. 12.5%). 그래서
+# 세 섹션 모두 cancel 과 set_status 두 쓰기의 node 호출 순서를 직접 관측한다.
+# 호출 지점을 늘리면 게이트 섹션도 같이 늘려라 — 지점만 늘리면 그 지점은 무보호가
 # 된다. ledger 게이트 분기가 정확히 그렇게 한 라운드 동안 무보호로 남아 있었다.
+#
+# 지금 호출 지점은 여덟이다. codex waker 가 더한 넷(ambiguous / blocked:cancelled /
+# blocked:done / 알 수 없는 판정)과 run_probe 안 취소 분기 하나는 "자식이 실제로
+# 해제되는가"는 테스트가 보지만 **순서까지 보는 게이트는 아직 없다** — 위 세 섹션과 같은
+# 방식(node 호출 순서 관측)으로 늘려야 할 빚이다. 순서를 맞춰 둔 이유는 같다: 이 넷은
+# 전부 부모를 종료 상태로 바꾸고 나가는 경로라, 뒤집히면 같은 중간 상태가 열린다.
 #
 # 실패·지연이 부모 status 를 영구히 frozen 으로 남기지 않게, 실패는 경고로만 남기고
 # 항상 rc=0 으로 돌아온다 — 호출자는 그 뒤에 무조건 set_status 를 부른다. 이중 재개
@@ -423,22 +509,157 @@ if ledger_complete; then
   exit 0
 fi
 
+# mode=ledger 인데 handoff 가 진짜 wfledger 원장이 아닌 경우(MAJOR B) — freeze.sh
+# cmd_snap 이 세션 탐지 실패로 mode 를 resume 에서 ledger 로 자동 강등하면, 그
+# handoff 는 gen_snap_handoff 가 만든 스냅 문서(## 하던 일/완료 지점/다음 단계/검증
+# 4섹션)라 wfledger.sh init 이 만드는 원장(## 워크플로우 런 절 등)과 모양이 다르다.
+# 아래 ledger 프롬프트를 그대로 쓰면 재개 세션이 존재하지 않는 "## 워크플로우 런"
+# 섹션을 찾아 헤매거나 원장이 아닌 파일에 wfledger.sh set-session 을 부르게 된다.
+# 진짜 원장인지는 wfledger.sh init 이 헤더에 남기는 마커(<!-- freeze-ledger v1 -->)
+# 로 가른다 — 이 마커가 있는 handoff 만 기존 원장 재개 프롬프트(회귀 금지, 기존
+# 테스트가 덮는다)를 쓰고, 없으면 일반 handoff 용으로 완화된 프롬프트를 쓴다.
+is_real_wfledger() {  # is_real_wfledger <handoff 경로>
+  [ -f "$1" ] && head -5 "$1" 2>/dev/null | grep -qF '<!-- freeze-ledger v1 -->'
+}
+
+# 실제 재개 호출 — waker=bash 의 기본 경로이자 waker=codex 가 실패했을 때의 폴백
+# 마지막 단계라서 함수로 뺐다. rc 는 전역으로 남겨 아래 완료 처리가 그대로 읽는다.
+#
+# MINOR K — 이 함수가 매번 새 이름의 출력 파일에 쓴다. 예전엔 do-resume.sh(codex
+# 시도)와 이 함수(bash 기본/폴백)가 전부 같은 resume-output.txt 를 썼는데, codex 가
+# 실패해 이 함수가 폴백으로 다시 불리면 codex 시도의 출력이 통째로 덮여 사라졌다 —
+# 이 함수는 thaw.sh 프로세스당 최대 한 번만 불리므로(같은 실행 안에서 두 번 불릴
+# 일이 없다) pid+시각으로만 나눠도 do-resume.sh 의 nonce 기반 파일명과 절대 겹치지
+# 않는다.
+run_resume() {
+  local out_file="$DIR/resume-output.$(date +%s)-$$.txt"
+  if [ "$MODE" = "ledger" ]; then
+    # ledger 모드 — 대화 전체를 복원하는 대신, 원장 한 장만 실은 신선한 세션을 띄운다.
+    # 프롬프트는 짧게 유지한다: 실제 지시 내용은 원장/handoff 파일 안에 있다.
+    local ledger_prompt
+    if is_real_wfledger "$HANDOFF"; then
+      ledger_prompt="땡 — freeze 스킬(ledger 모드)로 예약된 재개다. 대화 문맥이 전혀 없다 — $HANDOFF (wf ledger) 가 유일한 명세다. 이 파일을 읽고 '## 워크플로우 런' 에 등록된 journal.jsonl 을 확인해 이미 끝난(result 줄이 있는) agent 호출은 건너뛰고, 남은 단계를 이어서 완료하는 연속 스크립트를 새로 작성해 돌려라. 새 워크플로우를 등록하기 전에 먼저 'bash ~/.claude/skills/freeze/scripts/wfledger.sh set-session --ledger $HANDOFF --cwd $CWD' 로 원장의 session 필드를 지금 이 세션으로 갱신해라 — 원장의 session 은 이전(한도에 막힌) 세션 UUID 로 고정돼 있어서, 갱신 없이 wfledger.sh run 을 부르면 journal/script 경로가 존재하지 않는 옛 세션 디렉토리로 계산된다. 끝나면 원장의 단계 체크박스를 갱신하고 '## 재개 결과' 섹션에 한 일과 검증 결과를 기록해줘.${CHAIN_NOTE}${DONE_NOTE}"
+    else
+      ledger_prompt="땡 — freeze 스킬(ledger 모드)로 예약된 재개다. 대화 문맥이 전혀 없다 — $HANDOFF 가 유일한 명세다. 이 문서는 wfledger 원장이 아니다(워크플로우 런 등록·wfledger.sh 호출 불필요) — 파일을 읽고 중단된 작업을 이어서 완료해줘. 끝나면 같은 파일 하단에 '## 재개 결과' 섹션으로 한 일과 검증 결과를 기록해줘.${CHAIN_NOTE}${DONE_NOTE}"
+    fi
+    "$CLAUDE_BIN" -p --permission-mode "$PERM" "$ledger_prompt" \
+      > "$out_file" 2>&1
+    rc=$?
+  else
+    "$CLAUDE_BIN" -p --resume "$SESSION" --permission-mode "$PERM" \
+      "땡 — freeze 스킬로 예약된 재개다. $HANDOFF 를 읽고 중단된 작업을 이어서 완료해줘. 끝나면 같은 파일 하단에 '## 재개 결과' 섹션으로 한 일과 검증 결과를 기록해줘.${CHAIN_NOTE}${DONE_NOTE}" \
+      > "$out_file" 2>&1
+    rc=$?
+  fi
+  # 사람이 찾기 쉽게 "마지막 것"을 가리키는 포인터를 남긴다(do-resume.sh 와 같은 관례).
+  ln -sf "$(basename "$out_file")" "$DIR/resume-output.txt" 2>/dev/null || true
+}
+
+# codex-wake.sh 가 실패(비영 종료)를 반환했을 때, bash 경로로 폴백해도 안전한지
+# 판정한다. 실제 재개는 do-resume.sh 가 소유하며 claude 호출 "전"에 resume-attempt.json
+# 을(nonce 포함), 호출 "직후" 같은 nonce 로 wake-verdict.json 을 원자적으로 남긴다 —
+# 이 함수는 codex-wake.sh 내부의 같은 판정을 thaw.sh 쪽에서도 다시 확인한다(BLOCKER 1
+# 대응: claude 재개가 실제로 성공했는데 그 사실을 기록하기 전에 codex 가 죽으면,
+# 판정 없이 그냥 폴백해서 같은 세션을 두 번 여는 사고가 난다 — 그걸 막는 게 이 함수의
+# 존재 이유다). codex-wake.sh 의 같은 로직과 반드시 같은 분류를 내야 한다(문구까지
+# 맞출 필요는 없고 버킷만 일치하면 된다):
+#   none        시도 흔적 자체가 없다(codex 가 do-resume.sh 를 부르지도 못하고 죽음)
+#               → bash 폴백이 안전하다.
+#   success     attempt/verdict nonce 일치 + resumed:true. codex-wake.sh 가 이미
+#               exit 0 로 잡았어야 하지만 방어적으로 여기서도 같은 결론을 낸다.
+#   clean_fail  attempt/verdict nonce 일치 + resumed:false + outcome:"preflight_fail".
+#               claude 가 일을 시작하기도 전에 거절당했다는 확실한 증거가 있을 때만
+#               (MAJOR G) — 같은 세션을 다시 열 위험 없이 안전하게 폴백할 수 있다.
+#   ambiguous   시도 흔적은 있는데 판정을 확정할 수 없다(판정 파일 없음·nonce 불일치·
+#               파싱 실패), 또는 resumed:false 인데 outcome 이 preflight_fail 이 아닌
+#               경우(MAJOR G) — claude 가 세션을 열어 일을 하다가 실패했을 수 있어
+#               재재개가 위험하다. 폴백하지 않고 멈춘다.
+#   blocked:cancelled / blocked:done
+#               attempt/verdict nonce 일치 + resumed:false + reason 이 cancelled 또는
+#               done. do-resume.sh 또는 codex-wake.sh 가 claude/codex 를 부르기 전에
+#               취소·완료를 감지해 의도적으로 건너뛴 것이다(BLOCKER C). 폴백하면
+#               취소·완료된 예약을 다시 재개하는 사고이므로, 이 둘은 clean_fail 과
+#               달리 폴백 대상에서 뺀다. (reason 판정이 outcome 판정보다 우선한다 —
+#               blocked 케이스의 verdict 에는 애초에 outcome 필드가 없다.)
+check_resume_attempt() {
+  node -e '
+const fs = require("fs");
+const dir = process.argv[1];
+let attempt = null, verdict = null;
+try { attempt = JSON.parse(fs.readFileSync(dir + "/resume-attempt.json")); } catch {}
+if (!attempt) { console.log("none"); process.exit(0); }
+try { verdict = JSON.parse(fs.readFileSync(dir + "/wake-verdict.json")); } catch {}
+if (!verdict || verdict.nonce !== attempt.nonce) { console.log("ambiguous"); process.exit(0); }
+if (verdict.resumed === true) { console.log("success"); process.exit(0); }
+if (verdict.reason === "cancelled" || verdict.reason === "done") { console.log("blocked:" + verdict.reason); process.exit(0); }
+console.log(verdict.outcome === "preflight_fail" ? "clean_fail" : "ambiguous");
+' "$DIR"
+}
+
 set_status "running"
-echo "[$(date '+%F %T')] 재개: session=$SESSION cwd=$CWD mode=$MODE chain_left=$CHAIN_LEFT"
+echo "[$(date '+%F %T')] 재개: session=$SESSION cwd=$CWD mode=$MODE chain_left=$CHAIN_LEFT waker=$WAKER"
 cd "$CWD" || { set_status "failed"; exit 1; }
 
-if [ "$MODE" = "ledger" ]; then
-  # ledger 모드 — 대화 전체를 복원하는 대신, 원장 한 장만 실은 신선한 세션을 띄운다.
-  # 프롬프트는 짧게 유지한다: 실제 지시 내용은 원장 파일 안에 있다.
-  "$CLAUDE_BIN" -p --permission-mode "$PERM" \
-    "땡 — freeze 스킬(ledger 모드)로 예약된 재개다. 대화 문맥이 전혀 없다 — $HANDOFF (wf ledger) 가 유일한 명세다. 이 파일을 읽고 '## 워크플로우 런' 에 등록된 journal.jsonl 을 확인해 이미 끝난(result 줄이 있는) agent 호출은 건너뛰고, 남은 단계를 이어서 완료하는 연속 스크립트를 새로 작성해 돌려라. 새 워크플로우를 등록하기 전에 먼저 'bash ~/.claude/skills/freeze/scripts/wfledger.sh set-session --ledger $HANDOFF --cwd $CWD' 로 원장의 session 필드를 지금 이 세션으로 갱신해라 — 원장의 session 은 이전(한도에 막힌) 세션 UUID 로 고정돼 있어서, 갱신 없이 wfledger.sh run 을 부르면 journal/script 경로가 존재하지 않는 옛 세션 디렉토리로 계산된다. 끝나면 원장의 단계 체크박스를 갱신하고 '## 재개 결과' 섹션에 한 일과 검증 결과를 기록해줘.${CHAIN_NOTE}${DONE_NOTE}" \
-    > "$DIR/resume-output.txt" 2>&1
-  rc=$?
+if [ "$WAKER" = "codex" ]; then
+  # codex 가 프로브·재개 시점·재시도 판단을 대신한다 — 실제 claude 호출은
+  # do-resume.sh 가 소유한다(codex-wake.sh 참고). 여기선 codex-wake.sh 의 exit code 만
+  # 우선 보고, 실패하면 attempt/verdict 를 직접 다시 읽어 폴백이 안전한지 판정한다.
+  # FREEZE_CHAIN_NOTE 로 위에서 계산해 둔 체인 안내문을 넘겨 codex 가 실행할 재개
+  # 프롬프트에도 같은 문구가 실리게 한다.
+  echo "[$(date '+%F %T')] codex waker 시도 — job=$JOB"
+  if FREEZE_CHAIN_NOTE="$CHAIN_NOTE" FREEZE_DONE_NOTE="$DONE_NOTE" FREEZE_RETRY_DEADLINE="$retry_deadline" bash "$SCRIPT_DIR/codex-wake.sh" "$JOB" >> "$DIR/thaw.log" 2>&1; then
+    rc=0
+    echo "[$(date '+%F %T')] codex waker 성공 — 재개 완료로 처리"
+  else
+    codex_rc=$?
+    outcome=$(check_resume_attempt)
+    echo "[$(date '+%F %T')] codex waker 실패(rc=$codex_rc) — 재개 시도 판정: $outcome"
+    case "$outcome" in
+      success)
+        # codex-wake.sh 가 이미 이 경우를 exit 0 로 처리했어야 한다 — 도달하면 방어적 경로.
+        rc=0
+        ;;
+      ambiguous)
+        release_next_job          # status 전환보다 먼저 — release_next_job 주석 참고
+        set_status "ambiguous"
+        echo "[$(date '+%F %T')] 재개 결과 불명확(ambiguous) — 같은 세션을 다시 열 위험이 있어 폴백하지 않고 멈춘다. $DIR/resume-output.txt 와 codex-wake.log 를 사람이 확인해야 한다." >&2
+        exit 1
+        ;;
+      blocked:cancelled)
+        # do-resume.sh/codex-wake.sh 가 claude/codex 를 부르기 전에 취소를 감지해
+        # 건너뛴 것이다(BLOCKER C item 4) — 취소된 예약을 폴백으로 다시 재개하면
+        # 안 되므로 status 를 cancelled 로 유지하고 조용히 끝낸다.
+        release_next_job          # status 전환보다 먼저 — release_next_job 주석 참고
+        set_status "cancelled"
+        echo "[$(date '+%F %T')] 재개 대상이 이미 취소됨 — 폴백하지 않고 조용히 종료"
+        exit 0
+        ;;
+      blocked:done)
+        # 같은 이유로, 다른 경로로 이미 완료된 예약을 폴백으로 다시 여는 사고를 막는다.
+        release_next_job          # status 전환보다 먼저 — release_next_job 주석 참고
+        set_status "completed_early"
+        echo "[$(date '+%F %T')] 완료 신호 감지(codex 경로) — 폴백하지 않고 조용히 종료"
+        exit 0
+        ;;
+      none|clean_fail)
+        echo "[$(date '+%F %T')] bash 경로로 폴백한다(프로브 포함) — 사유: $outcome"
+        run_probe
+        run_resume
+        ;;
+      *)
+        # MINOR I — check_resume_attempt() 가 위 다섯 값 중 무엇도 안 내는 건 있을 수
+        # 없는 일이지만(방어적으로), 여기서 안 잡으면 rc 가 끝까지 비어 있다가 아래
+        # `[ "$rc" = 0 ]` 에서 set -u 로 즉사하고 status 가 running 에 멈춘 채 남는다.
+        # 가장 보수적인 쪽(ambiguous 와 동일하게 멈춤)으로 떨어뜨린다.
+        release_next_job          # status 전환보다 먼저 — release_next_job 주석 참고
+        set_status "ambiguous"
+        echo "[$(date '+%F %T')] 재개 시도 판정이 알려지지 않은 값(\"$outcome\") — 안전한 쪽으로 폴백하지 않고 멈춘다." >&2
+        exit 1
+        ;;
+    esac
+  fi
 else
-  "$CLAUDE_BIN" -p --resume "$SESSION" --permission-mode "$PERM" \
-    "땡 — freeze 스킬로 예약된 재개다. $HANDOFF 를 읽고 중단된 작업을 이어서 완료해줘. 끝나면 같은 파일 하단에 '## 재개 결과' 섹션으로 한 일과 검증 결과를 기록해줘.${CHAIN_NOTE}${DONE_NOTE}" \
-    > "$DIR/resume-output.txt" 2>&1
-  rc=$?
+  run_resume
 fi
 
 # 완료 신호가 보이면 미리 걸어둔 다음 창은 필요 없다 — 조용히 해제한다.

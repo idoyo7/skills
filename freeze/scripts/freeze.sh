@@ -5,6 +5,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/_node.sh"
+source "$SCRIPT_DIR/_claude.sh"
 STATE_ROOT="${FREEZE_STATE_DIR:-$HOME/.local/state/freeze}"
 PROJECTS_DIR="${CLAUDE_PROJECTS_DIR:-$HOME/.claude/projects}"
 
@@ -72,13 +73,24 @@ freeze.sh <command> [args]
                                     [--mode resume|ledger] 기본 resume — 재개 방식(아래 참고)
                                     [--pad <초>] auto 추정에만 기본 300 적용. 명시 시각(epoch/+N/HH:MM/ISO)엔
                                                  --pad 를 직접 줘야만 더해진다(계약 보존).
+                                    [--waker bash|codex] 기본 bash — 땡 이후 프로브·재개를 누가 맡는지.
+                                                 codex 는 폴백이 있다. 아래 "codex waker" 절 참고.
   arm --cwd <dir> --handoff <path> [--chain-left <n>] [--job <name>]
-      [--at <시각>] [--mode resume|ledger] [--pad <초>] [--permission-mode <mode>]
+      [--at <시각>] [--mode resume|ledger] [--pad <초>] [--permission-mode <mode>] [--waker bash|codex]
                                     선예약(얼음 대기). 작업 시작 시점에 걸어두고 남은 쿼터를 끝까지 태운다.
                                     한도로 막히면 예약분이 알아서 잇고, 먼저 끝나면 `done` 으로 해제한다.
                                     --chain-left 는 창을 넘겨가며 이어붙일 최대 횟수(기본 2).
                                     --at 기본값은 auto(직접 arm 할 때). 체인 내부 재무장(thaw.sh)은
                                     리셋 경계에서 auto 추정이 UNKNOWN 이 되는 것을 피하려고 명시 epoch 를 넘긴다.
+  snap [--cwd <dir>] [--at <시각>] [--job <name>] [--mode resume|ledger]
+       [--chain-left <n>] [--permission-mode <mode>] [--pad <초>] [--waker bash|codex]
+       [--out <handoff 경로>]
+                                    즉발 예약 — handoff 작성까지 스크립트가 맡는다. 한도 90%대처럼
+                                    LLM 이 handoff 를 손으로 쓰다가 끊겨 예약 자체가 날아가는 사고를
+                                    막으려는 명령. transcript 를 못 읽거나 <cwd> 가 git 이 아니어도
+                                    예약은 반드시 걸린다. --cwd 기본 $(pwd), --at 기본 auto.
+                                    --out 없으면 <cwd>/.omc/handoffs/freeze-snap-<시각>.md.
+                                    --chain-left 를 주면 arm(선예약) 경로, 안 주면 reserve 경로를 탄다.
   done --handoff <path>             완료 신호. 이 handoff 로 걸린 활성 예약 전체(체인 중이면 현재 창 +
                                     선무장된 다음 창 모두)에 조용히 종료하라는 신호를 남긴다.
                                     handoff 경로는 절대 realpath 로 정규화해 비교하므로 reserve/arm 때
@@ -178,6 +190,58 @@ console.log(blockEnd && now < blockEnd ? String(Math.floor(blockEnd)) : 'UNKNOWN
 JS
 }
 
+# resolve_at 의 auto 실패 진단. cmd_estimate 자신의 출력 계약(epoch 한 줄 또는 UNKNOWN,
+# 다른 곳에서 파싱한다)은 절대 건드리지 않고, cmd_estimate 가 이미 보는 두 데이터
+# 소스(HUD 캐시, transcript)를 다시 훑어 "왜 UNKNOWN 이 나왔는지"만 별도로 두 줄 낸다.
+# OMC HUD 가 안 깔린 환경(예: 맥)에서 원인을 알 길이 없어서 추가했다 — 호출한 쪽이
+# stderr 로 돌려 사용자에게 보여준다.
+estimate_diag() {
+  local hud_cache="${FREEZE_HUD_CACHE:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/hud/cache}"
+  node - "$PROJECTS_DIR" "$hud_cache" <<'JS'
+const fs = require('fs'), path = require('path');
+const root = process.argv[2];
+const hudCache = process.argv[3];
+const nowSec = Date.now() / 1000;
+
+// ---- HUD 캐시 진단 ----
+try {
+  const files = fs.readdirSync(hudCache).filter(f => f.startsWith('stdin.') && f.endsWith('.json'));
+  if (!files.length) {
+    console.log(`  HUD 캐시 ${hudCache}: 없음`);
+  } else {
+    const mtimes = files.map(f => fs.statSync(path.join(hudCache, f)).mtimeMs / 1000);
+    const ageMin = Math.round((nowSec - Math.max(...mtimes)) / 60);
+    let hasResets = false;
+    for (const f of files) {
+      try {
+        const at = JSON.parse(fs.readFileSync(path.join(hudCache, f), 'utf8'))?.rate_limits?.five_hour?.resets_at;
+        if (Number.isFinite(at)) { hasResets = true; break; }
+      } catch { /* skip */ }
+    }
+    console.log(`  HUD 캐시 ${hudCache}: stdin.*.json ${files.length}개, 최신 ${ageMin}분 전, ${hasResets ? 'resets_at 있음' : 'resets_at 없음'}`);
+  }
+} catch {
+  console.log(`  HUD 캐시 ${hudCache}: 없음`);
+}
+
+// ---- transcript 진단 ----
+let count = 0;
+try {
+  for (const d of fs.readdirSync(root)) {
+    const dir = path.join(root, d);
+    let files = [];
+    try { files = fs.readdirSync(dir).filter(f => f.endsWith('.jsonl')); } catch { continue; }
+    for (const f of files) {
+      try { if (fs.statSync(path.join(dir, f)).mtimeMs / 1000 >= nowSec - 26 * 3600) count++; } catch { /* skip */ }
+    }
+  }
+  console.log(`  transcript ${root}: 최근 26시간 내 ${count}개`);
+} catch {
+  console.log(`  transcript ${root}: 없음`);
+}
+JS
+}
+
 # --at 인자를 epoch 로 변환.
 # pad(초) 계약 — auto 로 추정한 시각에만 기본 300(5분)을 적용한다: 리셋 직후엔
 # 아직 한도가 실제로 안 풀렸을 수 있어 추정 오차를 흡수할 여유가 필요해서다.
@@ -192,7 +256,13 @@ resolve_at() {
   case "$at" in
     auto)
       epoch=$(cmd_estimate)
-      [ "$epoch" = "UNKNOWN" ] && { echo "ERROR: 땡 시각 추정 실패 — --at 으로 직접 지정 필요" >&2; return 1; }
+      if [ "$epoch" = "UNKNOWN" ]; then
+        {
+          echo "ERROR: 땡 시각 추정 실패 — --at 으로 직접 지정 필요 (예: --at 15:00, --at +5h)"
+          estimate_diag
+        } >&2
+        return 1
+      fi
       pad="${pad_given:-300}"
       ;;
     +*[smh])
@@ -304,7 +374,7 @@ cmd_reserve() {
   # 사용자 명시 결정(2026-08-17). --permission-mode 로 건별 하향 가능.
   # pad 기본값은 여기서 정하지 않는다 — auto 냐 명시 시각이냐에 따라 resolve_at 이 결정한다.
   # mode: resume(기본, 대화 전체 --resume) | ledger(원장 한 장만 실은 신선한 세션).
-  local at="" cwd="" handoff="" session="" job="" perm="bypassPermissions" pad="" mode="resume" created_at=""
+  local at="" cwd="" handoff="" session="" job="" perm="bypassPermissions" pad="" mode="resume" created_at="" waker="bash"
   local chain="" chain_left="" via=""
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -323,6 +393,7 @@ cmd_reserve() {
       --chain) chain="$2"; shift 2;;
       --chain-left) chain_left="$2"; shift 2;;
       --via) via="$2"; shift 2;;
+      --waker) waker="$2"; shift 2;;
       # 내부 전용(문서화 안 함) — thaw.sh 의 체인 재무장이 부모 예약의 created_at 을
       # 자식에게 그대로 물려줄 때만 쓴다. major 3: handoff 로 키잉된 완료 신호를
       # "이 예약의 created_at 보다 오래됐으면 무시" 로 걸러내려면, 체인으로 이어지는
@@ -336,6 +407,33 @@ cmd_reserve() {
   [ -n "$at" ] && [ -n "$cwd" ] && [ -n "$handoff" ] || { usage; return 1; }
   [ -f "$handoff" ] || { echo "ERROR: handoff 파일 없음: $handoff" >&2; return 1; }
   case "$mode" in resume|ledger) ;; *) echo "ERROR: --mode 는 resume|ledger 만 지원: $mode" >&2; return 1;; esac
+  case "$waker" in bash|codex) ;; *) echo "ERROR: --waker 는 bash|codex 만 지원: $waker" >&2; return 1;; esac
+  # MINOR L — 사용자가 명시로 준 job 이름만 검증한다(비었으면 몇 줄 아래에서 자동
+  # 생성되는데, 그 값은 항상 안전한 문자로만 조합된다). codex-wake.sh 가 이 이름을
+  # printf %q 로 이스케이프해 런북에 심는 전제는 "codex 가 그 텍스트를 셸에 그대로
+  # 붙여넣는다"는 것이다 — job 이름을 애초에 이 안전한 문자셋으로만 제한하면 그
+  # 전제가 깨지는 상황 자체가 생기지 않는다. 이미 만들어진 예약(job 디렉토리)은
+  # 여기서 새로 만드는 게 아니라서 건드리지 않는다.
+  if [ -n "$job" ]; then
+    case "$job" in
+      *[!A-Za-z0-9._-]*)
+        echo "ERROR: --job 이름은 영문자·숫자·점(.)·밑줄(_)·하이픈(-) 만 허용한다: $job" >&2
+        return 1
+        ;;
+    esac
+  fi
+
+  # claude 실행 파일 사전 검증 — 지금까진 땡이 돼서야(thaw.sh 안에서) 실패를 알게
+  # 됐는데, 그땐 이미 무인 상태라 아무도 못 고친다. 예약을 만들기 전에 확인해
+  # 사용자가 그 자리에서 고칠 기회를 준다. FREEZE_SKIP_CLAUDE_CHECK=1 은 이 검증
+  # 로직 자체가 의심스러울 때 쓰는 탈출구 — 실제 재개는 thaw.sh 가 어차피 한 번
+  # 더 resolve_claude_bin 을 부르므로, 여기서 건너뛰어도 조용히 죽지는 않는다.
+  if [ "${FREEZE_SKIP_CLAUDE_CHECK:-}" = "1" ]; then
+    echo "경고: FREEZE_SKIP_CLAUDE_CHECK=1 — claude 실행 파일 검증을 건너뛴다" >&2
+  else
+    resolve_claude_bin >/dev/null || return 1
+  fi
+
   handoff=$(normalize_handoff "$handoff")
 
   local resolved epoch effective_pad
@@ -359,7 +457,12 @@ cmd_reserve() {
   mkdir -p "$dir"
   # 이전에 같은 job 이름을 썼다가 남은 완료 마커가 있으면 지운다 — done 마커는
   # 이 job 디렉토리 안에만 있으므로(아래 cmd_done 참고) 다른 job 을 건드릴 일이 없다.
-  rm -f "$dir/done"
+  # resume-attempt.json/wake-verdict.json/wake-prompt.txt 도 같이 지운다(BLOCKER A
+  # 의 다른 얼굴) — 같은 job 이름을 재사용하면 codex-wake.sh 가 이번 실행 전에
+  # 스스로 정리하기 전까지 옛 판정 파일이 이 디렉토리에 남아있는 창이 생기고,
+  # 그 창에서 thaw.sh 나 사람이 상태를 들여다보면 이전 창의 결과를 이번 예약
+  # 결과로 오인할 수 있다.
+  rm -f "$dir/done" "$dir/resume-attempt.json" "$dir/wake-verdict.json" "$dir/wake-prompt.txt"
   # major 1 — 같은 job 이름으로 재예약하면 이전 슬리퍼가 살아있는 채로 새 슬리퍼가
   # 하나 더 뜬다(sleeper.pid 는 마지막 것만 남으므로 이전 것은 고아가 되어 나중에
   # 자기 몫의 재개를 따로 부른다 — 재현: reserve 를 짧은 간격으로 두 번 부르면
@@ -372,11 +475,11 @@ cmd_reserve() {
   # 필드 이름·값·JSON 키 순서는 예전(reserve 가 쓰고 arm 이 뒤에 세 필드를 덧붙인 형태)과
   # 같게 유지한다 — 기존 테스트가 이 필드들을 단언한다.
   node -e "$FREEZE_JS_ATOMIC"'
-const [p, job, session, cwd, handoff, epoch, perm, mode, pad, createdAt, chain, chainLeft, via] = process.argv.slice(1);
+const [p, job, session, cwd, handoff, epoch, perm, mode, pad, createdAt, chain, chainLeft, via, waker] = process.argv.slice(1);
 const d = {
   job, session_id: session, cwd, handoff,
   resume_at: parseInt(epoch), created_at: createdAt ? parseInt(createdAt) : Date.now(),
-  permission_mode: perm, mode, pad: parseInt(pad), status: "frozen"
+  permission_mode: perm, mode, pad: parseInt(pad), waker, status: "frozen"
 };
 // 빈 문자열이면 필드를 아예 만들지 않는다 — reserve 로 걸린 예약에는 예전처럼 chain 계열
 // 필드가 없어야 한다(thaw.sh 가 그 부재로 "체인 아님"을 판정한다).
@@ -386,7 +489,7 @@ if (chainLeft) d.chain_left = parseInt(chainLeft);
 if (via) d.via = via;
 writeJsonAtomic(p, d);
 ' "$dir/reservation.json" "$job" "$session" "$cwd" "$handoff" "$epoch" "$perm" "$mode" "$effective_pad" \
-  "$created_at" "$chain" "$chain_left" "$via"
+  "$created_at" "$chain" "$chain_left" "$via" "$waker"
 
   spawn_sleeper "$job" "$dir"
   echo "얼음 — job=$job session=${session:-(미탐지)} mode=$mode 땡=$(fmt_epoch "$epoch" '+%m/%d %H:%M') ($(( (epoch - $(date +%s)) / 60 ))분 후)"
@@ -448,14 +551,36 @@ cmd_status() {
 cmd_cancel() {
   local job="$1" dir="$STATE_ROOT/$1"
   [ -f "$dir/reservation.json" ] || { echo "ERROR: 예약 없음: $job" >&2; return 1; }
-  local pid; pid=$(cat "$dir/sleeper.pid" 2>/dev/null || true)
-  [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
-  node -e "$FREEZE_JS_ATOMIC"'
+
+  # 체인 전체를 따라간다 — thaw.sh 가 다음 창을 선무장하는 데 성공하면 부모
+  # reservation.json 에 next_job 을 남겨둔다. 이 job 만 취소하고 이어붙은 자식을
+  # 그대로 두면(예: codex waker 실패 후 bash 폴백 도중 취소된 경우), 그 자식은
+  # 고아로 남아 다음 창에서 이미 끝난 작업을 다시 연다(MAJOR 2 회귀). 최대 50단계까지만
+  # 따라간다 — 오염된 데이터로 순환에 빠지는 것을 막는 안전판이다(정상 체인은
+  # chain_left 로 이미 짧게 묶여 있어 이 한도에 걸릴 일이 없다).
+  local cur="$job" curdir="$dir" depth=0 pid next
+  while [ -n "$cur" ] && [ "$depth" -lt 50 ]; do
+    depth=$((depth + 1))
+    [ -f "$curdir/reservation.json" ] || break
+    pid=$(cat "$curdir/sleeper.pid" 2>/dev/null || true)
+    # 프로세스 그룹째 죽인다(BLOCKER C item 3) — spawn_sleeper 가 detached:true(setsid)
+    # 로 띄운 thaw.sh 는 자기 프로세스 그룹의 리더다. 단일 pid 에 TERM 을 보내면 thaw
+    # 자신만 죽고, 그 자식인 codex exec → do-resume.sh → claude 는 안 닿아 고아로
+    # 남아 런북대로 재개를 계속 실행한다("--waker codex 예약은 사실상 취소가 안 됨").
+    # "-$pid" 로 그룹 전체에 보내고, 실패하면(그룹 리더가 아닌 예외적 상황 등)
+    # 단일 pid kill 로 폴백한다.
+    [ -n "$pid" ] && { kill -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true; }
+    next=$(node -e "$FREEZE_JS_ATOMIC"'
 const fs = require("fs"), p = process.argv[1];
-const d = JSON.parse(fs.readFileSync(p)); d.status = "cancelled";
+const d = JSON.parse(fs.readFileSync(p));
+d.status = "cancelled";
 writeJsonAtomic(p, d);
-' "$dir/reservation.json"
-  echo "취소됨: $job"
+console.log(d.next_job ?? "");
+' "$curdir/reservation.json")
+    echo "취소됨: $cur"
+    cur="$next"
+    curdir="$STATE_ROOT/$cur"
+  done
 }
 
 cmd_check() {
@@ -485,7 +610,7 @@ cmd_check() {
 # 그러면 동시에 도는 다른 잡의 reservation.json 을 잘못 골라 체인 정보를 덮어쓸 수 있다.
 # job 이름을 먼저 확정해두면 그런 추정 자체가 필요 없다.
 cmd_arm() {
-  local cwd="" handoff="" job="" chain_left="2" perm="bypassPermissions" pad="" mode="resume" at="auto" session="" created_at=""
+  local cwd="" handoff="" job="" chain_left="2" perm="bypassPermissions" pad="" mode="resume" at="auto" session="" created_at="" waker="bash"
   while [ $# -gt 0 ]; do
     case "$1" in
       --cwd) cwd="$2"; shift 2;;
@@ -498,6 +623,7 @@ cmd_arm() {
       --at) at="$2"; shift 2;;
       --session) session="$2"; shift 2;;
       --created-at) created_at="$2"; shift 2;;  # 내부 전용 — cmd_reserve 주석 참고
+      --waker) waker="$2"; shift 2;;
       *) echo "ERROR: unknown arg $1" >&2; return 1;;
     esac
   done
@@ -517,9 +643,389 @@ cmd_arm() {
   # _node.sh (d) 주석에 측정치와 파급 경로). 여기서 파일을 다시 열지 않는 것 자체가
   # 그 레이스의 수정이므로, 편의를 이유로 쓰기를 되살리지 마라.
   cmd_reserve --at "$at" --cwd "$cwd" --handoff "$handoff" --permission-mode "$perm" \
-    --job "$job" --mode "$mode" --chain 1 --chain-left "$chain_left" --via arm \
+    --job "$job" --mode "$mode" --waker "$waker" --chain 1 --chain-left "$chain_left" --via arm \
     ${extra[@]+"${extra[@]}"} || return 1
   echo "무장 완료 — job=$job 남은 쿼터를 계속 쓰다가 막히면 예약분이 잇는다 (체인 ${chain_left}회). 먼저 끝나면: freeze.sh done --handoff $handoff"
+}
+
+# snap 이 쓸 handoff 를 결정적으로 생성한다. 사람이 쓰는 handoff 와 달리 의도가 아니라
+# transcript·git 의 흔적만 담는다 — LLM 없이 만들어야 하므로 그 이상은 알 도리가 없다.
+# transcript(둘째 인자, 없으면 빈 문자열)는 마지막 2MB 만 읽고 줄 단위로 JSON 파싱하며
+# 깨진 줄은 건너뛴다 — 대형 transcript 전체 파싱을 피하는 것과 같은 이유(cmd_estimate 의
+# edgeTs 주석 참고)다. transcript 를 못 읽거나 <cwd> 가 git 워크트리가 아니어도 이 함수는
+# 실패하지 않는다 — 해당 자리에 안내 문구를 넣고 파일을 끝까지 써낸다. handoff 가 걸리는
+# 것이 예약 성공의 전제이므로(cmd_reserve 가 --handoff 파일 존재를 검사한다), 여기서
+# 죽으면 snap 전체가 죽는다.
+gen_snap_handoff() {  # gen_snap_handoff <cwd> <transcript 절대경로 또는 빈 문자열> <out 절대경로>
+  node - "$1" "$2" "$3" <<'JS'
+const fs = require('fs');
+const path = require('path');
+const { execFileSync } = require('child_process');
+
+const cwd = process.argv[2];
+const transcript = process.argv[3];
+const outPath = process.argv[4];
+
+function trunc(s, n) {
+  s = String(s);
+  return s.length > n ? s.slice(0, n) + '…' : s;
+}
+
+// 파일 뒤쪽 2MB 만 읽는다 — 앞부분이 잘려 첫 줄이 깨져도 아래 파서가 그 줄만 건너뛴다.
+function readTail(file, cap) {
+  const size = fs.statSync(file).size;
+  const start = Math.max(0, size - cap);
+  const len = size - start;
+  const buf = Buffer.alloc(len);
+  const fd = fs.openSync(file, 'r');
+  fs.readSync(fd, buf, 0, len, start);
+  fs.closeSync(fd);
+  return buf.toString('utf8');
+}
+
+// 사람이 친 user 턴만 고른다 — isMeta(훅 피드백 등 시스템 주입)는 제외하고,
+// content 가 문자열이거나 text 파트를 담고 있어야 한다. tool_result 만 담긴
+// 턴(도구 실행 결과가 되돌아온 user 턴)은 text 파트가 없어 자동으로 걸러진다.
+function extractUserText(o) {
+  if (o.isMeta) return null;
+  const content = o.message && o.message.content;
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    const texts = content.filter(c => c && c.type === 'text' && typeof c.text === 'string').map(c => c.text);
+    if (texts.length) return texts.join('\n');
+  }
+  return null;
+}
+function extractAssistantText(o) {
+  const content = o.message && o.message.content;
+  if (!Array.isArray(content)) return null;
+  const texts = content.filter(c => c && c.type === 'text' && typeof c.text === 'string').map(c => c.text);
+  return texts.length ? texts.join('\n') : null;
+}
+function extractTodos(o) {
+  const content = o.message && o.message.content;
+  if (!Array.isArray(content)) return null;
+  for (const c of content) {
+    if (c && c.type === 'tool_use' && c.name === 'TodoWrite' && c.input && Array.isArray(c.input.todos)) {
+      return c.input.todos;
+    }
+  }
+  return null;
+}
+
+let userMsgs = [], lastAssistant = null, lastTodos = null, transcriptReadOk = false;
+if (transcript) {
+  try {
+    const text = readTail(transcript, 2 * 1024 * 1024);
+    transcriptReadOk = true;
+    for (const raw of text.split('\n')) {
+      const line = raw.trim();
+      if (!line) continue;
+      let o;
+      try { o = JSON.parse(line); } catch { continue; }   // 잘린 줄·깨진 줄은 건너뛴다
+      if (o.type === 'user') {
+        const t = extractUserText(o);
+        if (t !== null) userMsgs.push(t);
+      } else if (o.type === 'assistant') {
+        const at = extractAssistantText(o);
+        if (at !== null) lastAssistant = at;
+        const td = extractTodos(o);
+        if (td !== null) lastTodos = td;
+      }
+    }
+  } catch {
+    transcriptReadOk = false;   // 읽기 실패 — 아래에서 "(transcript 없음)" 으로 처리
+  }
+}
+
+// git 정보 — <cwd> 가 워크트리가 아니거나 git 자체가 없으면 gitInfo 는 null 로 남고,
+// 아래 조립부가 각 자리에 안내 문구를 채운다.
+let gitInfo = null;
+try {
+  execFileSync('git', ['-C', cwd, 'rev-parse', '--is-inside-work-tree'], { stdio: 'pipe' });
+  const branch = execFileSync('git', ['-C', cwd, 'branch', '--show-current'], { encoding: 'utf8' }).trim() || '(감지 안 됨)';
+  const log = execFileSync('git', ['-C', cwd, 'log', '--oneline', '-3'], { encoding: 'utf8' }).trim() || '(커밋 없음)';
+  const cap = (lines, n) => lines.length > n ? lines.slice(0, n).join('\n') + `\n…외 ${lines.length - n}줄` : lines.join('\n');
+  const statusLines = execFileSync('git', ['-C', cwd, 'status', '--porcelain'], { encoding: 'utf8' }).split('\n').filter(Boolean);
+  const diffLines = execFileSync('git', ['-C', cwd, 'diff', '--stat'], { encoding: 'utf8' }).split('\n').filter(Boolean);
+  gitInfo = {
+    branch,
+    log,
+    status: statusLines.length ? cap(statusLines, 60) : '(깨끗함)',
+    diff: diffLines.length ? cap(diffLines, 40) : '(변경 없음)',
+  };
+} catch { gitInfo = null; }
+
+// ---- 조립 ----
+// 여기까지(transcript 파싱·git 호출)는 이미 각자 try/catch 로 감싸 실패를 흡수했다.
+// 이 조립 단계 자체는 문자열 가공뿐이라 던질 일이 거의 없지만, "그럼에도" 던지면
+// (예상 못 한 입력 형태 등) 마지막 파일 쓰기 전 단계에서 죽는 것만은 막아야 한다 —
+// 그래서 이 블록 전체를 한 번 더 감싼다. 실제 디스크 쓰기(mkdirSync/writeFileSync)
+// 만은 이 catch 밖에 남겨 던진 그대로 올려보낸다 — cmd_snap 쪽 폴백(bash 최소 골격
+// → STATE_ROOT 대피)이 받아야 할 신호라서다.
+let doc;
+try {
+  let titlePart;
+  if (gitInfo) {
+    const firstLog = gitInfo.log.split('\n')[0] || '';
+    const commitMsg = firstLog ? firstLog.replace(/^[0-9a-f]+\s*/, '') : '(커밋 없음)';
+    titlePart = `${gitInfo.branch} / ${commitMsg}`;
+  } else {
+    titlePart = '(git 아님)';
+  }
+
+  let userSection, assistantSection;
+  if (!transcript || !transcriptReadOk) {
+    userSection = '(transcript 없음)';
+    assistantSection = '(transcript 없음)';
+  } else {
+    userSection = userMsgs.length
+      ? userMsgs.slice(-5).map(m => `- ${trunc(m, 400).replace(/\n/g, ' ')}`).join('\n')
+      : '(최근 사용자 요청 없음)';
+    assistantSection = lastAssistant !== null ? trunc(lastAssistant, 300) : '(직전 어시스턴트 발언 없음)';
+  }
+
+  let todoSection;
+  if (transcript && transcriptReadOk && lastTodos !== null) {
+    todoSection = lastTodos.map(t => {
+      const done = t && t.status === 'completed';
+      const label = (t && (t.content || t.activeForm)) || '(내용 없음)';
+      return `- [${done ? 'x' : ' '}] ${label}`;
+    }).join('\n');
+  } else {
+    todoSection = 'TodoWrite 기록 없음 — 위 최근 사용자 요청과 작업 트리 변경을 근거로 재개 세션이 다음 단계를 직접 정한다.';
+  }
+
+  const branchBlock = gitInfo ? `${gitInfo.branch}\n\n${gitInfo.log}` : '(git 워크트리 아님)';
+  const statusBlock = gitInfo ? gitInfo.status : '(git 워크트리 아님)';
+  const diffBlock = gitInfo ? gitInfo.diff : '(git 워크트리 아님)';
+
+  doc = `# freeze handoff (snap 자동생성) — ${titlePart}
+
+> freeze.sh snap 이 transcript 와 git 에서 기계적으로 뽑은 문서다. LLM 이 쓴 요약이 아니라서
+> 의도가 아니라 흔적만 담겨 있다. 재개 세션은 이걸 근거로 직접 판단해라.
+
+## 하던 일
+### 최근 사용자 요청 (오래된 것 → 최근)
+${userSection}
+
+### 직전 어시스턴트 발언
+${assistantSection}
+
+## 완료 지점
+### 브랜치 / 최근 커밋
+${branchBlock}
+
+### 작업 트리 변경
+${statusBlock}
+
+### diffstat
+${diffBlock}
+
+## 다음 단계
+### 마지막 TodoWrite 상태
+${todoSection}
+
+## 검증
+(snap 자동생성이라 비어 있다. 재개 세션이 리포의 테스트 관행을 확인해 채운다.)
+`;
+} catch (e) {
+  doc = `# freeze handoff (snap 자동생성 실패) — ${cwd}
+
+> snap 자동생성 중 예기치 않은 오류로 조립 단계가 실패했다: ${String((e && e.message) || e)}
+> transcript·git 수집이 실패해 뼈대만 남겼다. 재개 세션은 cwd 의 git 상태를 직접 확인해 이어가라.
+
+## 하던 일
+### 최근 사용자 요청 (오래된 것 → 최근)
+(자동생성 실패)
+
+### 직전 어시스턴트 발언
+(자동생성 실패)
+
+## 완료 지점
+### 브랜치 / 최근 커밋
+(자동생성 실패)
+
+### 작업 트리 변경
+(자동생성 실패)
+
+### diffstat
+(자동생성 실패)
+
+## 다음 단계
+### 마지막 TodoWrite 상태
+(자동생성 실패)
+
+## 검증
+(snap 자동생성이라 비어 있다. 재개 세션이 리포의 테스트 관행을 확인해 채운다.)
+`;
+}
+
+fs.mkdirSync(path.dirname(outPath), { recursive: true });
+fs.writeFileSync(outPath, doc);
+JS
+}
+
+# gen_snap_handoff 가 그래도 실패했을 때(디스크 가득, $out 디렉토리 쓰기 권한 없음 등)
+# bash 가 직접 쓰는 최소 골격. node 없이 순수 셸로 쓰므로 gen_snap_handoff 를 죽인
+# 원인과 같은 이유로 또 죽을 가능성이 낮다 — 유일하게 공유하는 실패 지점은 디렉토리
+# 쓰기 권한 자체뿐이고, 그건 cmd_snap 쪽에서 이 함수가 실패하면 STATE_ROOT 로
+# 옮겨 다시 부르는 것으로 흡수한다.
+write_snap_fallback_handoff() {  # write_snap_fallback_handoff <out> <cwd>
+  local out="$1" cwd="$2"
+  mkdir -p "$(dirname "$out")" 2>/dev/null || return 1
+  cat > "$out" <<EOF2 || return 1
+# freeze handoff (snap 자동생성 실패) — $cwd
+
+> snap 자동생성 실패: transcript·git 수집이 실패해 뼈대만 남겼다. 재개 세션은 cwd 의
+> git 상태를 직접 확인해 이어가라. 실패 시각: $(date '+%F %T')
+
+## 하던 일
+### 최근 사용자 요청 (오래된 것 → 최근)
+(snap 자동생성 실패 — 뽑지 못함)
+
+### 직전 어시스턴트 발언
+(snap 자동생성 실패 — 뽑지 못함)
+
+## 완료 지점
+### 브랜치 / 최근 커밋
+(snap 자동생성 실패 — 뽑지 못함)
+
+### 작업 트리 변경
+(snap 자동생성 실패 — 뽑지 못함)
+
+### diffstat
+(snap 자동생성 실패 — 뽑지 못함)
+
+## 다음 단계
+### 마지막 TodoWrite 상태
+(snap 자동생성 실패 — 뽑지 못함)
+
+## 검증
+(snap 자동생성이라 비어 있다. 재개 세션이 리포의 테스트 관행을 확인해 채운다.)
+EOF2
+}
+
+# snap — 즉발 얼음. 지금까지의 얼음 절차는 LLM 이 handoff 를 직접 썼는데, 한도 95~99%
+# 에서 부르면 그 작성이 중간에 끊겨 예약 자체가 통째로 날아간다. handoff 작성을
+# gen_snap_handoff(결정적 스크립트)로 옮겨 LLM 이 할 일을 이 명령 한 줄로 줄인 것.
+# transcript 없음·읽기 실패·git 아님 어느 것도 이 함수를 죽이지 않는다 — 예약이
+# 걸리는 것이 handoff 품질보다 우선이라서다.
+cmd_snap() {
+  local cwd="" at="auto" job="" mode="resume" mode_explicit=0 chain_left="" perm="bypassPermissions" pad="" waker="bash" out=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --cwd) cwd="$2"; shift 2;;
+      --at) at="$2"; shift 2;;
+      --job) job="$2"; shift 2;;
+      --mode) mode="$2"; mode_explicit=1; shift 2;;
+      --chain-left) chain_left="$2"; shift 2;;
+      --permission-mode) perm="$2"; shift 2;;
+      --pad) pad="$2"; shift 2;;
+      --waker) waker="$2"; shift 2;;
+      --out) out="$2"; shift 2;;
+      *) echo "ERROR: unknown arg $1" >&2; return 1;;
+    esac
+  done
+  [ -n "$cwd" ] || cwd="$(pwd)"
+  case "$mode" in resume|ledger) ;; *) echo "ERROR: --mode 는 resume|ledger 만 지원: $mode" >&2; return 1;; esac
+  case "$waker" in bash|codex) ;; *) echo "ERROR: --waker 는 bash|codex 만 지원: $waker" >&2; return 1;; esac
+
+  [ -n "$out" ] || out="$cwd/.omc/handoffs/freeze-snap-$(date +%Y%m%d-%H%M%S).md"
+  out=$(normalize_handoff "$out")   # reserve/arm 이 어차피 다시 정규화하지만, 아래 mkdir·출력에
+                                     # 절대경로가 필요해 여기서 먼저 확정해 둔다.
+  # 이 mkdir 은 순전히 사전 준비용이다 — gen_snap_handoff 의 node 스크립트가 실제
+  # 쓰기 직전에 자기 mkdirSync 를 다시 하므로 여기서 실패해도 치명적이지 않다.
+  # set -e 아래서 이 줄 자체가 죽는 사고를 막으려고 || true 로 흡수한다 — 진짜
+  # "이 디렉토리에 못 쓴다"는 판정은 아래 gen_snap_handoff/write_snap_fallback_handoff
+  # 의 실제 쓰기 시도가 내린다.
+  mkdir -p "$(dirname "$out")" 2>/dev/null || true
+
+  # 최신 transcript 탐색 — detect_session 과 같은 방식(프로젝트 디렉토리의 최신 .jsonl)
+  # 이지만 실패해도 절대 죽지 않는다. 못 찾으면 빈 문자열을 그대로 넘겨
+  # gen_snap_handoff 가 "(transcript 없음)" 으로 처리하게 한다.
+  local slug proj_dir transcript=""
+  slug=$(echo "$cwd" | sed 's/[^A-Za-z0-9-]/-/g')
+  proj_dir="$PROJECTS_DIR/$slug"
+  if [ -d "$proj_dir" ]; then
+    transcript=$(ls -t "$proj_dir"/*.jsonl 2>/dev/null | head -1 || true)
+  fi
+  # 세션 id 는 transcript 파일명(.jsonl 을 뗀 것)과 같다 — detect_session 이 하는 일을
+  # 그대로 반복하는 대신 위에서 이미 찾은 transcript 를 재사용한다(같은 디렉토리를
+  # 또 훑을 이유가 없다).
+  local session=""
+  [ -n "$transcript" ] && session=$(basename "$transcript" .jsonl)
+
+  # resume 모드(기본)는 --resume <세션> 이 계약이라, 세션을 못 찾으면 cmd_reserve/cmd_arm
+  # 이 치명적으로 실패시킨다(detect_session 참고) — 그럼 snap 이 예약을 못 건다.
+  # snap 은 한도 임박 같은 즉발 상황에 불리는 명령이라 "예약이 아예 안 걸리는 것"보다
+  # "ledger 로 자동 강등해서라도 예약은 건다"가 이 기능의 제1원칙("예약이 걸리는 것이
+  # 우선")에 맞는다 — snap 이 만든 handoff 는 애초에 대화 문맥 없이도 읽히는 자립적
+  # 문서라 ledger 재개와 궁합이 좋다. 단, 사용자가 --mode resume 을 명시로 골랐다면
+  # 그 선택 자체가 계약이므로 강등하지 않고 아래 reserve/arm 호출이 그대로 실패하게
+  # 둔다(실패해도 handoff 는 이미 만들어져 있다는 안내가 나간다 — 아래 참고).
+  if [ -z "$session" ] && [ "$mode" = "resume" ] && [ "$mode_explicit" != 1 ]; then
+    echo "경고: transcript 세션을 못 찾아 --mode 를 resume 에서 ledger 로 자동 강등한다" >&2
+    mode="ledger"
+  fi
+
+  # handoff 생성 — "예약이 걸리는 것이 handoff 품질보다 우선" 이 이 기능의 제1원칙이라,
+  # gen_snap_handoff(node) 가 실패해도 여기서 cmd_snap 을 죽이지 않는다. 3중 폴백:
+  #   1) gen_snap_handoff 실패 → bash 가 직접 최소 골격을 같은 $out 경로에 쓴다
+  #      (write_snap_fallback_handoff — node 없이 순수 셸이라 다른 실패 원인을 안 탄다).
+  #   2) 그마저 실패(=$out 디렉토리 자체에 못 쓴다) → 반드시 쓸 수 있다고 기대할 수 있는
+  #      STATE_ROOT 아래로 옮겨 다시 쓰고, 이후 예약도 그 경로로 건다. 사용자에게는
+  #      원래 경로에 못 썼다는 사실을 stderr 로 남긴다.
+  #   3) 그것마저 실패(=STATE_ROOT 조차 못 쓴다=예약 자체가 원천적으로 불가능한 환경)
+  #      → 그때만 이유를 명확히 남기고 비영으로 죽는다. 이 지점 이후로는 예약을
+  #      만들 방법이 없으므로 죽는 것이 맞다.
+  if ! gen_snap_handoff "$cwd" "$transcript" "$out"; then
+    echo "경고: handoff 자동생성 실패 — 최소 골격으로 대체한다: $out" >&2
+    if ! write_snap_fallback_handoff "$out" "$cwd"; then
+      local safe_out="$STATE_ROOT/snap-fallback-$(date +%Y%m%d-%H%M%S).md"
+      echo "경고: $out 에 쓸 수 없다 — 대신 $safe_out 에 최소 골격을 남긴다" >&2
+      mkdir -p "$STATE_ROOT" 2>/dev/null || true
+      if ! write_snap_fallback_handoff "$safe_out" "$cwd"; then
+        echo "ERROR: handoff 를 어디에도 쓸 수 없다 — $out, $safe_out 둘 다 실패. 예약을 걸 수 없다" >&2
+        return 1
+      fi
+      out="$safe_out"
+    fi
+  fi
+
+  # job 이름은 여기서 먼저 정해 reserve/arm 양쪽에 그대로 넘긴다 — cmd_arm 이 자기
+  # job 을 스스로 정하는 것과 같은 이유(동시 호출 시 "가장 최근 reservation.json" 을
+  # 사후 추정하지 않기 위해서다).
+  [ -n "$job" ] || job="freeze-snap-$(date +%Y%m%d-%H%M%S)-$$"
+
+  local -a extra=()
+  [ -n "$pad" ] && extra+=(--pad "$pad")
+  # 이미 위에서 찾아둔 세션을 그대로 넘긴다 — cmd_reserve 가 detect_session 을
+  # 다시 불러 같은 디렉토리를 또 훑게 둘 이유가 없다(ledger 모드로 강등됐어도
+  # session_id 필드는 wfledger.sh 가 쓰므로 여전히 유용해 그대로 넘긴다).
+  [ -n "$session" ] && extra+=(--session "$session")
+
+  if [ -n "$chain_left" ]; then
+    if ! cmd_arm --cwd "$cwd" --handoff "$out" --at "$at" --mode "$mode" \
+        --chain-left "$chain_left" --permission-mode "$perm" --job "$job" --waker "$waker" \
+        ${extra[@]+"${extra[@]}"} >/dev/null; then
+      echo "handoff 는 만들어졌다 — $out (예약 실패, --at 을 직접 지정해 다시 시도: freeze.sh arm --cwd \"$cwd\" --handoff \"$out\" --at <시각> --chain-left $chain_left)" >&2
+      return 1
+    fi
+  else
+    if ! cmd_reserve --cwd "$cwd" --handoff "$out" --at "$at" --mode "$mode" \
+        --permission-mode "$perm" --job "$job" --waker "$waker" \
+        ${extra[@]+"${extra[@]}"} >/dev/null; then
+      echo "handoff 는 만들어졌다 — $out (예약 실패, --at 을 직접 지정해 다시 시도: freeze.sh reserve --cwd \"$cwd\" --handoff \"$out\" --at <시각>)" >&2
+      return 1
+    fi
+  fi
+
+  local res="$STATE_ROOT/$job/reservation.json"
+  local epoch; epoch=$(job_field "$res" resume_at)
+  local handoff_saved; handoff_saved=$(job_field "$res" handoff)
+  echo "얼음(즉발) — job=$job mode=$mode 땡=$(fmt_epoch "$epoch" '+%m/%d %H:%M') ($(( (epoch - $(date +%s)) / 60 ))분 후)"
+  echo "handoff=$handoff_saved — 토큰이 남았으면 '## 다음 단계' 를 보강해라. 남지 않았으면 그대로 두면 된다."
 }
 
 # done — 완료 신호. 이 handoff 를 참조하는 "활성"(frozen|running) 예약 전부에 신호를 남긴다.
@@ -597,6 +1103,7 @@ case "${1:-}" in
   estimate) cmd_estimate;;
   reserve) shift; cmd_reserve "$@";;
   arm) shift; cmd_arm "$@";;
+  snap) shift; cmd_snap "$@";;
   done) shift; cmd_done "$@";;
   status) cmd_status;;
   cancel) shift; cmd_cancel "$@";;

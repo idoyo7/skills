@@ -1,5 +1,23 @@
 # CHANGELOG
 
+## 1.2.0 — 2026-08-31
+
+즉발 예약(`snap`), workflow-arm 훅의 규모 게이트, codex waker 를 들이고 맥에서 남아 있던 하드코딩을 걷었다.
+
+**즉발 — `freeze.sh snap`.** 얼음의 병목은 handoff 였다. 한도 95~99% 에서 부르면 LLM 이 handoff 를 쓰다 중간에 끊기고, 그러면 예약 자체가 통째로 날아간다. 이제 handoff 를 스크립트가 만든다 — 최신 transcript 뒤쪽 2MB 에서 사람이 친 사용자 메시지 다섯 개와 마지막 TodoWrite 상태, 직전 어시스턴트 발언을 뽑고 거기에 브랜치·최근 커밋·`git status --porcelain`·diffstat 을 붙여 SKILL.md 가 정하는 네 섹션 골격에 채운 뒤 곧바로 reserve 또는 arm 까지 간다. LLM 이 하는 일은 Bash 한 줄이고, 토큰이 남았을 때만 `## 다음 단계` 를 손보면 된다. transcript 를 못 읽든 cwd 가 git 워크트리가 아니든 그 자리엔 안내 문구가 들어가고 예약은 그대로 걸린다 — handoff 품질보다 예약이 걸리는 쪽이 언제나 우선이다.
+
+**workflow-arm 훅이 작은 워크플로우를 놔준다.** 지금까지는 `script`·`scriptPath`·`name` 중 하나라도 있으면 규모를 가리지 않고 한 번 막았다. 이제 서브에이전트 수를 먼저 추정해 열 개 이하면 예약 여부를 볼 것도 없이 통과시키고 세션 마커도 남기지 않는다 — 작은 워크플로우 한 번이 그 세션의 "한 번만 막기" 기회를 태워버리면 안 되기 때문이다. 추정은 `agent(` 호출 수에 팬아웃 대상의 크기를 곱한다. `parallel`·`pipeline`·`map` 계열은 Workflow 툴의 표준 API 라 그 존재만으로 막으면 게이트가 예전과 똑같아지므로, 대상이 인라인 배열 리터럴이거나 `const` 로 선언된 배열이면 깊이 인식 스캐너로 원소를 세어 계산에 넣는다(문자열 안 콤마와 중첩 구조를 구분한다). 팬아웃이 중첩되면 곱해서 누적한다 — 열 개 위에 열 개면 백이다. `review.findings.map(...)` 처럼 모델 산출물 위로 도는 팬아웃, `[...items]` 같은 spread 가 섞인 배열, `for`·`while` 루프는 상한이 없으니 그때만 막는다. 패턴 매칭은 주석과 문자열 리터럴을 지운 텍스트 위에서만 돈다 — 주석에 적힌 `for (` 하나로 소형 워크플로우가 막히던 오탐을 없앴다. 임계값은 `FREEZE_HOOK_AGENT_THRESHOLD` 로 바꿀 수 있다.
+
+**codex waker — `--waker codex`.** 땡의 재개 경로에서 Anthropic 을 건드리는 지점을 실제 재개 호출 하나로 줄인다. haiku 프로브를 건너뛰고 codex 가 재개를 주도한다. 다만 codex 에게 셸 명령을 조립시키지는 않는다 — `do-resume.sh` 가 재개 실행을 통째로 소유하고, codex 는 그것을 언제 몇 번 부를지만 판단한다. codex 가 다루는 텍스트에는 claude 경로도 세션 UUID 도 프롬프트도 나타나지 않아 따옴표나 개행이 섞인 job 이름·경로로 인자 경계가 깨질 여지가 없다. `do-resume.sh` 는 claude 를 부르기 전에 nonce 를 `resume-attempt.json` 에 남기고 부른 직후 같은 nonce 로 판정을 원자적으로 쓴다. 그래서 재개가 성공한 뒤 codex 가 죽어도 thaw 가 그 흔적을 보고 같은 세션을 두 번 열지 않는다 — 결과가 불명확하면 폴백 대신 `ambiguous` 로 멈춘다. 재개 시도 흔적 자체가 없을 때만 기존 bash 경로(프로브 → 재개)로 떨어진다.
+
+대기 자체는 어느 쪽을 골라도 그대로 detached bash 슬리퍼가 맡는다. 몇 시간을 기다리는 데는 모델이 필요 없고, 슬리퍼는 이미 Claude 세션과 무관하게 독립 프로세스로 살기 때문이다. `waker` 필드가 없는 구버전 reservation 은 bash 로 돈다.
+
+체인 쪽도 같이 손봤다. 선무장에 성공하면 부모 reservation 에 `next_job` 을 남기고, `cancel` 이 그 사슬을 따라 체인 전체로 전파한다. 예전엔 폴백 도중 취소하면 미리 걸어둔 다음 창이 고아로 남아 이미 끝난 작업을 다시 열 수 있었다.
+
+**맥에서 남아 있던 하드코딩.** 1.1.1~1.1.2 가 GNU 전제와 node 탐색을 걷었는데 claude 실행 파일 자체는 `$HOME/.local/bin/claude` 로 굳어 있었다. 맥은 homebrew·npm 전역·`~/.claude/local` 어디에나 claude 를 두고 비대화형 ssh 의 PATH 는 `/usr/bin:/bin:/usr/sbin:/sbin` 뿐이라 못 찾는다. `_claude.sh` 의 `resolve_claude_bin` 이 `_node.sh` 와 같은 사다리로 찾고, `cmd_reserve` 가 예약을 만들기 전에 미리 검증한다 — 예전엔 땡이 되어서야 실패를 알았다(`FREEZE_SKIP_CLAUDE_CHECK=1` 로 우회). `--at auto` 추정이 실패할 때도 HUD 캐시 상태와 최근 transcript 개수를 stderr 에 찍어, 맥처럼 HUD 가 없는 환경에서 왜 실패했는지 보이게 했다.
+
+리눅스 PASS=267 FAIL=0 SKIP=0, 훅 57 passed.
+
 ## 1.1.3 — 2026-08-31
 
 `arm` 으로 걸어둔 예약이 땡이 아니라 즉시 재개되던 blocker 를 고쳤고, 그 결함이 테스트에서 조용히 지나가게 만든 구조들을 함께 걷었다. `arm` 과 체인 선무장은 이 저장소에 들어온 뒤 실사용 이력이 없었고(오늘까지의 실제 재개는 전부 `reserve`), 스위트는 통과하면서 결함과 공존하고 있었다.

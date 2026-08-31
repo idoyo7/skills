@@ -1,8 +1,8 @@
 ---
 name: freeze
-version: "1.1.3"
-description: "얼음! — 5시간 사용량 한도(또는 자리 비움) 때문에 작업을 멈춰야 할 때, 진행 상태를 남겨두고 리셋 시각(땡)에 헤드리스로 자동 재개하는 세션 예약 스킬. 재개 방식은 둘 — resume(대화 전체를 `claude -p --resume` 로 복원)과 ledger(대화를 복원하지 않고 wfledger.sh 로 만든 원장 한 장만 실은 신선한 세션을 띄우는 방식, 5시간을 넘겨 재개할 때 캐시 TTL 만료로 대화 전체를 콜드 리드하는 비용을 피한다). 호출 즉시 실행 중이던 백그라운드 태스크·워크플로우를 세우고, LLM 이 하는 일은 handoff(또는 원장) 한 장 작성뿐 — 예약·대기·프로브·재개·체인 재무장은 전부 결정적 스크립트가 처리해 남은 쿼터를 태우지 않는다. 땡 시각은 transcript 타임스탬프로 5시간 윈도우를 역산해 자동 추정하고, 추정이 안 서면 사용자에게 묻는다. 리셋 시각엔 haiku 프로브(몇 토큰)로 한도 해제를 확인한 뒤 재개한다. 트리거 — \"얼음\", \"freeze\", \"한도 걸렸다\", \"usage limit\", \"세션 예약\", \"리셋되면 이어서\", \"5시간 제한\", \"쿼터 초과, 나중에 마저\", 큰 Workflow 실행 전 workflow-arm 훅의 예약 안내. 예약 확인·해제 — \"땡\", \"freeze 상태\", \"예약 취소\". 맥으로 작업을 넘기는 건 mac-run, 주기 반복 실행은 /loop 이 맞다."
-argument-hint: "[땡 시각 — 예: 15:00, +2h, auto(기본)] [--job <이름>] [--mode resume|ledger]"
+version: "1.2.0"
+description: "얼음! — 5시간 사용량 한도(또는 자리 비움) 때문에 작업을 멈춰야 할 때, 진행 상태를 남겨두고 리셋 시각(땡)에 헤드리스로 자동 재개하는 세션 예약 스킬. 기본 경로는 즉발(`snap`) 한 줄이다 — handoff 를 LLM 이 쓰지 않고 스크립트가 transcript 와 git 에서 기계적으로 뽑아 곧바로 예약까지 건다. 한도 95~99% 에서 handoff 를 쓰다 끊겨 예약이 통째로 날아가는 사고를 막으려는 것. 재개 방식은 둘 — resume(대화 전체를 `claude -p --resume` 로 복원)과 ledger(대화를 복원하지 않고 wfledger.sh 로 만든 원장 한 장만 실은 신선한 세션을 띄우는 방식, 5시간을 넘겨 재개할 때 캐시 TTL 만료로 대화 전체를 콜드 리드하는 비용을 피한다). 예약·대기·프로브·재개·체인 재무장은 전부 결정적 스크립트가 처리해 남은 쿼터를 태우지 않는다. 땡 시각은 HUD 캐시나 transcript 타임스탬프로 5시간 윈도우를 역산해 자동 추정하고, 추정이 안 서면 사용자에게 묻는다. 리셋 시각엔 haiku 프로브(몇 토큰)로 한도 해제를 확인한 뒤 재개하는데, `--waker codex` 를 주면 프로브 없이 codex 가 재개와 재시도를 주도해 Anthropic 접점을 재개 호출 하나로 줄인다. 트리거 — \"얼음\", \"freeze\", \"한도 걸렸다\", \"usage limit\", \"세션 예약\", \"리셋되면 이어서\", \"5시간 제한\", \"쿼터 초과, 나중에 마저\", 큰 Workflow 실행 전 workflow-arm 훅의 예약 안내. 예약 확인·해제 — \"땡\", \"freeze 상태\", \"예약 취소\". 맥으로 작업을 넘기는 건 mac-run, 주기 반복 실행은 /loop 이 맞다."
+argument-hint: "[땡 시각 — 예: 15:00, +2h, auto(기본)] [--job <이름>] [--mode resume|ledger] [--waker bash|codex]"
 ---
 
 # /freeze — 얼음! 세션 예약, 땡에 자동 재개
@@ -10,8 +10,9 @@ argument-hint: "[땡 시각 — 예: 15:00, +2h, auto(기본)] [--job <이름>] 
 한도에 걸렸거나 걸리기 직전일 때 부른다. 지금 세션의 작업 상태를 얼려두고, 땡(리셋 시각)에 스크립트가 재개한다.
 
 ```
-얼음 ─▶ 백그라운드 중지 ─▶ handoff/원장 작성(유일한 LLM 작업) ─▶ reserve/arm(슬리퍼 기동) ─▶ 세션 종료
-땡  ─▶ 슬리퍼 기상 ─▶ haiku 프로브(한도 확인) ─▶ 재개(resume 또는 ledger) ─▶ 결과 기록
+얼음 ─▶ snap 한 줄 (handoff 자동생성 + 예약, LLM 0토큰) ─▶ 세션 종료
+       └ 토큰이 남았으면 handoff 보강 (선택)
+땡  ─▶ 슬리퍼 기상 ─▶ 한도 확인(haiku 프로브 또는 codex) ─▶ 재개(resume 또는 ledger) ─▶ 결과 기록
 ```
 
 경로 변수:
@@ -56,11 +57,32 @@ FZ=~/.claude/skills/freeze/scripts
 
 **어느 쪽을 고를지.** 창 하나 안에서 끝날 걸로 보이거나 리셋 직후 바로 재개할 상황이면 resume(기본)으로 충분하다. 큰 Workflow 를 여러 창에 걸쳐 돌릴 계획이거나, 체인이 여러 번 이어질 가능성이 있거나, 5시간 넘게 자리를 비울 예정이면 ledger 를 고른다 — `workflow-arm` 훅이 큰 Workflow 실행 전에 강제하는 것도 이 모드다.
 
-## 얼음 절차 — resume 모드 (토큰 최소 — 딱 4단계, 추가 탐색 금지)
+## 얼음 절차 — snap 이 기본 (토큰 최소, 추가 탐색 금지)
 
-**1. 하던 일 세우기.** 실행 중인 백그라운드 태스크·워크플로우가 있으면 중지(TaskStop)하고, 각각 어디까지 갔는지만 짧게 파악한다. 새 작업을 시작하지 않는다.
+실행 중인 백그라운드 태스크·워크플로우가 있으면 먼저 TaskStop 으로 세운다. **단, 한도가 임박했으면(95% 이상) 이 정리를 건너뛰고 바로 1번(snap)부터 부른다** — TaskStop 하나 부를 토큰조차 안 남았을 수 있다.
 
-**2. handoff 작성.** `.omc/handoffs/freeze-{YYYYMMDD-HHMM}.md` 한 장. 형식:
+**1. snap 한 줄.** handoff 작성부터 예약까지 전부 결정적 스크립트가 처리한다 — LLM 이 손으로 handoff 를 쓰다가 한도에 끊겨 예약 자체가 통째로 날아가는 사고를 막으려는 것이 이 명령의 존재 이유다. transcript 를 못 읽거나 `<cwd>` 가 git 워크트리가 아니어도 예약은 반드시 걸린다 — 그 자리엔 안내 문구가 대신 들어간다.
+
+```bash
+bash $FZ/freeze.sh snap --cwd "$(pwd)"
+```
+
+출력 예:
+
+```
+얼음(즉발) — job=freeze-snap-20260829-142830-1234 mode=resume 땡=08/29 15:05 (37분 후)
+handoff=/abs/.../.omc/handoffs/freeze-snap-20260829-142830.md — 토큰이 남았으면 '## 다음 단계' 를 보강해라. 남지 않았으면 그대로 두면 된다.
+```
+
+**2. (선택) handoff 보강.** 토큰이 아직 남아 있으면 위 handoff 경로를 열어 `## 다음 단계` 를 재개 세션이 오해 없이 이어갈 수 있을 만큼 구체적으로 채운다. snap 이 만든 문서는 transcript 와 git 에서 기계적으로 뽑은 흔적이지 의도가 아니다. 토큰이 안 남았으면 그대로 둔다 — 예약은 이미 걸려 있으니 보강은 순전히 덤이다.
+
+**3. 종료.** `얼음(즉발) —` 로 시작하는 출력 한 줄을 사용자에게 그대로 전하고 **작업을 멈춘다.** 이후 이 세션에서 토큰을 더 쓰지 않는다.
+
+땡 시각 규칙은 reserve 와 같다 — snap 도 `--at`/`--pad` 를 그대로 받는다. 시각을 직접 안 주면(`--at` 기본 auto) OMC HUD 캐시 → transcript 역산 순으로 추정하고, 그마저 안 되면 `땡 시각 추정 실패` 로 죽는다. 이땐 handoff 는 이미 만들어져 있으니(snap 출력의 `handoff=...` 경로 참고) 사용자에게 리셋 시각을 물은 뒤(AskUserQuestion) `bash $FZ/freeze.sh reserve --at <시각> --cwd "$(pwd)" --handoff <그 경로>` 로 시각만 지정해 다시 걸면 된다.
+
+### 손으로 handoff 를 쓰고 싶을 때
+
+snap 이 뽑은 흔적만으론 부족하고 직접 의도를 적어 넘기고 싶으면 `.omc/handoffs/freeze-{YYYYMMDD-HHMM}.md` 를 손으로 쓰고 `reserve` 를 직접 부른다. 형식:
 
 ```markdown
 # freeze handoff — {한 줄 요약}
@@ -74,19 +96,11 @@ FZ=~/.claude/skills/freeze/scripts
 {끝났다고 판단하는 기준 — 실행할 테스트·확인 명령}
 ```
 
-**3. 땡 시각 결정.**
-- 사용자가 시각을 줬거나 한도 에러 메시지에 리셋 시각이 보이면 그걸 쓴다 (`HH:MM` 또는 `+2h` 형태).
-- 없으면 `auto` — reserve 가 OMC HUD 캐시(statusline payload 의 `rate_limits.five_hour.resets_at`, 정확값)에서 읽고, 캐시가 없으면 transcript 로 5시간 윈도우를 역산한다.
-- reserve 가 `땡 시각 추정 실패` 로 죽으면 그때 사용자에게 리셋 시각을 묻는다 (AskUserQuestion).
-- `--pad <초>` — auto 로 추정한 시각에는 기본 300(5분)이 자동으로 붙는다(리셋 직후 아직 한도가 안 풀렸을 여유분). `HH:MM`·`+2h`·epoch 처럼 시각을 직접 지정했을 때는 그 시각이 계약이므로 기본 패딩이 붙지 않는다 — 여유가 필요하면 `--pad` 를 직접 줘야 한다.
-
-**4. 예약 + 종료 보고.**
-
 ```bash
 bash $FZ/freeze.sh reserve --at auto --cwd "$(pwd)" --handoff .omc/handoffs/freeze-....md
 ```
 
-출력의 `얼음 — job=... 땡=...` 한 줄을 사용자에게 그대로 전하고 **작업을 멈춘다.** 이후 이 세션에서 토큰을 더 쓰지 않는다.
+한도가 임박했을 땐 이 경로를 쓰지 마라 — 정확히 snap 이 막으려는 사고(작성 중 끊김)가 여기서 난다.
 
 ## 무장 절차 — ledger 모드 (장시간/여러 창짜리 작업 시작할 때)
 
@@ -132,14 +146,30 @@ bash $FZ/wfledger.sh set-session --ledger "$LEDGER" --cwd "$(pwd)"
 
 ## 땡 (자동)
 
-슬리퍼(`thaw.sh`)가 알아서 한다: 땡 시각까지 대기 → `claude -p --model haiku "ok"` 프로브로 한도 해제 확인(실패 시 15분 간격 최대 12회) → (체인이면 다음 창을 먼저 선무장) → 재개. resume 모드는 handoff 를 읽고 이어서 작업한 뒤 결과를 handoff 하단 `## 재개 결과` 에 남긴다. ledger 모드는 원장을 읽고 이어서 작업한 뒤 단계 체크박스와 `## 재개 결과` 를 갱신한다.
+슬리퍼(`thaw.sh`)가 알아서 한다: 땡 시각까지 대기 → `claude -p --model haiku "ok"` 프로브로 한도 해제 확인(실패 시 15분 간격 최대 12회) → (체인이면 다음 창을 먼저 선무장) → 재개. `--waker codex` 로 걸어둔 예약은 프로브 자리를 codex 가 대신한다(아래 "codex waker" 절). resume 모드는 handoff 를 읽고 이어서 작업한 뒤 결과를 handoff 하단 `## 재개 결과` 에 남긴다. ledger 모드는 원장을 읽고 이어서 작업한 뒤 단계 체크박스와 `## 재개 결과` 를 갱신한다.
 
 재개 권한은 기본 `bypassPermissions` 다(사용자 결정, 2026-08-17) — 무인 재개엔 승인자가 없어 `acceptEdits` 로는 Bash 가 전부 거부돼 실작업이 안 되는 것을 E2E 로 확인했다. 민감한 작업이면 예약 시 `--permission-mode acceptEdits` 로 하향할 수 있고, 그 경우 재개 세션은 파일 편집만 가능하다.
+
+## codex waker (`--waker bash|codex`)
+
+땡 이후 구간(프로브·재개·재시도 판단)을 누가 맡을지 고르는 옵션이다. `reserve`/`arm`/`snap` 어디든 붙일 수 있고, 기본값은 지금까지와 같은 `bash` 다.
+
+**대기(sleep) 자체는 어느 쪽을 골라도 그대로 detached bash 슬리퍼가 맡는다** — 땡까지 몇 시간을 기다리는 데는 모델이 필요 없고, 슬리퍼는 이미 Claude 세션과 무관하게 독립 프로세스로 산다. `--waker` 가 바뀌는 건 땡이 온 "이후"뿐이다.
+
+- **bash (기본)** — 지금까지의 방식. `claude -p --model haiku "ok"` 로 몇 토큰짜리 프로브를 15분 간격 최대 12회 돌려 한도 해제를 확인한 뒤 재개한다. 한도에 걸려 있는 동안 프로브 자체가 실패하며 재시도를 반복해 그만큼 Anthropic 쿼터를 건드린다.
+- **codex** — 프로브 구간을 건너뛰고 `codex-wake.sh` 에 맡긴다. codex 는 "언제·몇 번 재개를 시도할지"만 판단하고, **실제 claude 호출은 `do-resume.sh` 라는 결정적 wrapper 가 소유한다** — codex 가 셸 문자열을 조립해 직접 claude 를 실행하게 하면 job 이름·handoff 경로에 따옴표나 개행이 섞였을 때 인자 경계가 깨질 위험이 있어서다(danger-full-access 아래라 위험이 크다). 그래서 codex 에게는 `do-resume.sh <job>` 한 줄(이미 셸-안전하게 이스케이프된 텍스트)만 실행하게 하고, 그 안에서 CLAUDE_BIN·SESSION·PERM·프롬프트를 reservation.json 에서 다시 읽어 배열형 argv 로 조립한다 — codex 가 만지는 텍스트에는 애초에 위험한 값이 나타나지 않는다.
+  - **정확히 한 번 재개**: `do-resume.sh` 는 claude 를 부르기 "전"에 이번 실행을 식별하는 nonce 를 `resume-attempt.json` 에 남기고, 호출 "직후" 같은 nonce 로 `wake-verdict.json` 을 남긴다(둘 다 임시 파일 + rename 으로 원자적으로 쓴다). claude 재개가 실제로 성공한 뒤, 그 사실을 기록하기 전에 codex 가 죽는 극단적인 경우에도 thaw.sh 는 두 파일의 nonce 가 일치하는지로 "이번 실행의 결과를 확실히 아는가"를 가린다 — 확실하지 않으면(판정 파일이 없거나 nonce 가 안 맞으면) **재개를 다시 부르지 않고** `status: ambiguous` 로 멈춘다. 같은 세션을 두 번 여는 것보다 사람이 개입해야 하는 게 훨씬 덜 파괴적이기 때문이다. attempt 흔적 자체가 없으면(codex 가 `do-resume.sh` 를 부르지도 못하고 죽은 경우), 또는 attempt/verdict 의 nonce 가 일치하고 명확히 실패(`resumed:false`)했으면 안전하게 bash 경로(프로브 → 재개)로 폴백한다.
+  - `ambiguous` 상태가 되면 `freeze.sh status` 로 확인하고, `$DIR/resume-output.txt`·`codex-wake.log`·`resume-attempt.json`/`wake-verdict.json` 을 직접 봐서 실제로 재개가 끝났는지 사람이 판단해야 한다. 자동 재시도는 하지 않는다.
+  - 선무장돼 있던 다음 창(NEXT_JOB)은 부모 reservation.json 의 `next_job` 필드로 추적된다 — `freeze.sh cancel <job>` 은 이 필드를 따라 체인 전체를 취소하고, thaw.sh 가 취소·`ambiguous` 로 멈추는 모든 경로에서 선무장된 다음 창도 함께 취소해 고아 예약이 남지 않게 한다.
+  - 폴백이 있다 — codex 실행 파일이 없거나, codex 실행이 비영으로 끝나거나, 판정이 불명확하면 thaw.sh 는 조용히 bash 경로(프로브 → 재개)로 떨어진다. 폴백 사유는 `thaw.log` 에 남는다. codex 문제로 예약 자체가 날아가는 일은 없다.
+  - 구버전 reservation(`waker` 필드 없음)은 bash 로 동작한다.
+  - codex 실행 파일 탐색은 `FREEZE_CODEX_BIN` → PATH → `~/.nvm/versions/node/*/bin/codex` → `/opt/homebrew/bin/codex` → `/usr/local/bin/codex` 순이다.
 
 ## 수동 조작
 
 | 상황 | 명령 |
 |---|---|
+| 한도 임박 — 즉발로 얼음 (handoff 자동생성 + 예약) | `bash $FZ/freeze.sh snap --cwd "$(pwd)"` |
 | 예약 확인 (체인 선무장 실패 경고 포함) | `bash $FZ/freeze.sh status` |
 | 사용자가 먼저 돌아와 직접 이어서 하겠다 | `bash $FZ/freeze.sh cancel <job>` 후 handoff/원장 읽고 인라인 진행 |
 | 컨테이너 재시작으로 슬리퍼가 죽었다 | `bash $FZ/freeze.sh check` — 시각 지난 예약을 즉시 실행 |

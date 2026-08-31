@@ -55,6 +55,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -539,8 +540,15 @@ class TestWorkflowArm(unittest.TestCase):
         step4 = next(l for l in lines if l.startswith("4) "))
         done_line = next(l for l in lines[lines.index(step4) :] if "freeze.sh done" in l)
 
-        handoff2 = step2.split("--handoff ", 1)[1].strip()
-        handoff4 = done_line.split("--handoff ", 1)[1].strip()
+        # --handoff 가 줄 끝이라고 가정하지 않는다 — 2) 에는 뒤에 --waker 가 더 붙는다.
+        # 따옴표로 묶인 경로만 뽑아야 인자 순서가 바뀌어도 이 불변식만 잰다.
+        def handoff_of(line):
+            m = re.search(r'--handoff ("[^"]*"|\S+)', line)
+            assert m, f"--handoff 인자를 못 찾음: {line}"
+            return m.group(1).strip('"')
+
+        handoff2 = handoff_of(step2)
+        handoff4 = handoff_of(done_line)
         self.assertEqual(
             handoff2,
             handoff4,

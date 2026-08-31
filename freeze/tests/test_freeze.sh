@@ -415,7 +415,7 @@ section "reserve: 재예약 시점에 이전 슬리퍼가 이미 죽어있으면
 bash "$FZ" reserve --at +1h --cwd "$FAKE_CWD" --handoff "$HANDOFF" --job deadreapjob > /dev/null
 DEADREAP_PID=$(cat "$FREEZE_STATE_DIR/deadreapjob/sleeper.pid")
 kill -9 "$DEADREAP_PID" 2>/dev/null || true
-for i in $(seq 1 20); do dup_alive "$DEADREAP_PID" || break; sleep 0.2; done
+for i in $(seq 1 "$POLL_TRIES"); do dup_alive "$DEADREAP_PID" || break; sleep 0.2; done
 OUT2=$(bash "$FZ" reserve --at +1h --cwd "$FAKE_CWD" --handoff "$HANDOFF" --job deadreapjob 2>&1)
 # 부정 극성 1/3 — 여기서 파이프를 걷는 건 거짓 실패가 아니라 **조용한 거짓 통과**를
 # 막는 일이다. 옛 형태 `echo "$OUT2" | grep -q pat && fail || ok` 에서 grep 이 아니라
@@ -540,7 +540,7 @@ bash "$FZ" reserve --at +1h --cwd "$FAKE_CWD" --handoff "$HANDOFF" --job deadjob
 DEADPID=$(cat "$FREEZE_STATE_DIR/deadjob/sleeper.pid")
 kill "$DEADPID" 2>/dev/null || true
 alive() { s=$(ps -o state= -p "$1" 2>/dev/null | tr -d ' '); [ -n "$s" ] && [ "${s:0:1}" != "Z" ]; }  # 좀비는 죽은 것
-for i in $(seq 1 20); do alive "$DEADPID" || break; sleep 0.2; done
+for i in $(seq 1 "$POLL_TRIES"); do alive "$DEADPID" || break; sleep 0.2; done
 alive "$DEADPID" && fail "슬리퍼가 죽지 않음 (pid=$DEADPID)" || true
 node -e "
 const fs=require('fs'), p='$FREEZE_STATE_DIR/deadjob/reservation.json';
@@ -1241,7 +1241,7 @@ BROKEN_HANDOFF="$FAKE_CWD/broken-handoff.md"; echo "# broken" > "$BROKEN_HANDOFF
 bash "$FZ" reserve --at +5h --cwd "$FAKE_CWD" --handoff "$BROKEN_HANDOFF" --job brokenjob > /dev/null
 BROKEN_PID=$(cat "$FREEZE_STATE_DIR/brokenjob/sleeper.pid")
 kill "$BROKEN_PID" 2>/dev/null || true
-for i in $(seq 1 20); do dup_alive "$BROKEN_PID" || break; sleep 0.2; done
+for i in $(seq 1 "$POLL_TRIES"); do dup_alive "$BROKEN_PID" || break; sleep 0.2; done
 BROKEN_RES="$FREEZE_STATE_DIR/brokenjob/reservation.json"
 node -e '
 const fs = require("fs"), p = process.argv[1];
@@ -1274,7 +1274,7 @@ NOAT_HANDOFF="$FAKE_CWD/noat-handoff.md"; echo "# noat" > "$NOAT_HANDOFF"
 bash "$FZ" reserve --at +5h --cwd "$FAKE_CWD" --handoff "$NOAT_HANDOFF" --job noatjob > /dev/null
 NOAT_PID=$(cat "$FREEZE_STATE_DIR/noatjob/sleeper.pid")
 kill "$NOAT_PID" 2>/dev/null || true
-for i in $(seq 1 20); do dup_alive "$NOAT_PID" || break; sleep 0.2; done
+for i in $(seq 1 "$POLL_TRIES"); do dup_alive "$NOAT_PID" || break; sleep 0.2; done
 node -e '
 const fs = require("fs"), p = process.argv[1];
 const d = JSON.parse(fs.readFileSync(p)); d.resume_at = "";
@@ -1501,6 +1501,802 @@ NEWDIR="$CLAUDE_PROJECTS_DIR/$SLUG2/$NEWSESSION/subagents/workflows/$RUNID"
 [ -L "$NEWDIR" ] && ok "symlink 생성 확인" || fail "symlink 없음"
 assert_out "이미 존재" "재호출은 idempotent" "재호출 동작 이상" -- bash "$WFL" link --ledger "$LPATH" --run-id "$RUNID" --session "$NEWSESSION"
 bash "$WFL" link --ledger "$LPATH" --run-id "wf_missing" --session "$NEWSESSION" > /dev/null 2>&1 && fail "존재하지 않는 run 인데 성공함" || ok "원본 없으면 실패 코드로 폴백 신호"
+
+section "_claude.sh: FREEZE_CLAUDE_BIN 우선 — 실행 불가면 다른 후보로 새지 않는다"
+NOEXEC_CLAUDE="$TMP/claude-noexec"
+echo '#!/usr/bin/env bash' > "$NOEXEC_CLAUDE"   # chmod +x 를 일부러 안 함 — 실행 불가 상태 재현
+NOEXEC_ERR=$(FREEZE_CLAUDE_BIN="$NOEXEC_CLAUDE" bash -c "source '$HERE/../scripts/_claude.sh'; resolve_claude_bin" 2>&1 1>/dev/null) && NOEXEC_RC=0 || NOEXEC_RC=$?
+[ "$NOEXEC_RC" != 0 ] && ok "지정한 FREEZE_CLAUDE_BIN 이 실행 불가면 실패한다" || fail "실행 불가인데 성공함: $NOEXEC_ERR"
+case "$NOEXEC_ERR" in
+  *"$NOEXEC_CLAUDE"*) ok "에러 메시지에 지정 경로가 그대로 나온다(다른 후보로 새지 않았다는 증거)";;
+  *) fail "에러 메시지 이상: $NOEXEC_ERR";;
+esac
+
+section "_claude.sh: PATH 비우고 후보 디렉토리(~/.local/bin)에 두면 찾는다"
+CFAKE_HOME="$TMP/claude-fakehome"
+mkdir -p "$CFAKE_HOME/.local/bin"
+CFAKE_CLAUDE="$CFAKE_HOME/.local/bin/claude"
+printf '#!/usr/bin/env bash\necho fake-claude\n' > "$CFAKE_CLAUDE"
+chmod +x "$CFAKE_CLAUDE"
+CEMPTY_PATH="$TMP/claude-emptybin"
+mkdir -p "$CEMPTY_PATH"
+CBASH_ABS="$(command -v bash)"
+CFOUND=$(env -i HOME="$CFAKE_HOME" PATH="$CEMPTY_PATH" "$CBASH_ABS" -c "source '$HERE/../scripts/_claude.sh'; resolve_claude_bin")
+[ "$CFOUND" = "$CFAKE_CLAUDE" ] && ok "PATH 가 비어도 후보 디렉토리의 claude 를 찾는다" || fail "탐색 실패: got=$CFOUND want=$CFAKE_CLAUDE"
+
+# 아래 두 테스트는 실제 reserve 를 완주시켜야 해서(date/mkdir/ls/sort/bash spawn 등
+# 다른 외부 명령까지 필요) PATH 자체를 비우면 안 된다 — claude 실행 파일이 있는
+# 디렉토리만 걷어낸 PATH 를 쓴다. HOME 은 후보 3/4/7/8/9(전부 $HOME 기준)를 피하려고
+# 별도 빈 디렉토리로 돌린다.
+CSTRIPPED_PATH=$(printf '%s' "$PATH" | tr ':' '\n' | while IFS= read -r d; do [ -x "$d/claude" ] || printf '%s\n' "$d"; done | paste -sd: -)
+
+section "_claude.sh: 아무 데도 없으면 reserve 가 실패하고 예약 디렉토리를 안 만든다"
+CNO_HOME="$TMP/claude-nohome"
+mkdir -p "$CNO_HOME"
+echo "# h" > "$HANDOFF"
+if FREEZE_CLAUDE_BIN= HOME="$CNO_HOME" PATH="$CSTRIPPED_PATH" bash "$FZ" reserve --at +2s --pad 0 --cwd "$FAKE_CWD" --handoff "$HANDOFF" --job noclaudejob >"$TMP/noclaude.out" 2>"$TMP/noclaude.err"; then
+  NOCLAUDE_RC=0
+else
+  NOCLAUDE_RC=$?
+fi
+[ "$NOCLAUDE_RC" != 0 ] && ok "claude 를 못 찾으면 reserve 가 비영 종료" || fail "claude 없는데 reserve 가 성공함: $(cat "$TMP/noclaude.out")"
+[ ! -d "$FREEZE_STATE_DIR/noclaudejob" ] && ok "실패 시 예약 디렉토리를 만들지 않는다" || fail "예약 디렉토리가 생성됨: $FREEZE_STATE_DIR/noclaudejob"
+grep -q "claude 실행 파일을 찾지 못했다" "$TMP/noclaude.err" && ok "탐색 실패 사유가 stderr 에 명확히 남는다" || fail "에러 메시지 없음: $(cat "$TMP/noclaude.err")"
+
+section "_claude.sh: FREEZE_SKIP_CLAUDE_CHECK=1 이면 claude 없이도 reserve 가 성공한다"
+echo "# h" > "$HANDOFF"
+SKIP_OUT=$(FREEZE_CLAUDE_BIN= FREEZE_SKIP_CLAUDE_CHECK=1 HOME="$CNO_HOME" PATH="$CSTRIPPED_PATH" bash "$FZ" reserve --at +2s --pad 0 --cwd "$FAKE_CWD" --handoff "$HANDOFF" --job skipclaudejob 2>"$TMP/skipclaude.err")
+case "$SKIP_OUT" in
+  *"job=skipclaudejob"*) ok "FREEZE_SKIP_CLAUDE_CHECK=1 로 검증을 건너뛰고 reserve 성공";;
+  *) fail "우회 실패: $SKIP_OUT";;
+esac
+grep -q "FREEZE_SKIP_CLAUDE_CHECK" "$TMP/skipclaude.err" && ok "우회 시 경고가 stderr 에 남는다" || fail "경고 로그 없음: $(cat "$TMP/skipclaude.err")"
+
+section "resolve_at: auto 추정 실패 시 stderr 에 HUD 캐시·transcript 진단이 붙는다"
+echo "# h" > "$HANDOFF"
+DIAG_ERR=$(CLAUDE_PROJECTS_DIR="$TMP/diag-empty" FREEZE_HUD_CACHE="$TMP/diag-hud-empty" bash "$FZ" reserve --at auto --cwd "$FAKE_CWD" --handoff "$HANDOFF" --job diagjob 2>&1 1>/dev/null) && DIAG_RC=0 || DIAG_RC=$?
+[ "$DIAG_RC" != 0 ] && ok "auto 추정 실패 시 reserve 가 비영 종료" || fail "실패해야 하는데 성공: $DIAG_ERR"
+case "$DIAG_ERR" in
+  *"HUD 캐시"*) ok "진단에 HUD 캐시 줄이 있다";;
+  *) fail "HUD 캐시 진단 없음: $DIAG_ERR";;
+esac
+case "$DIAG_ERR" in
+  *"transcript"*) ok "진단에 transcript 줄이 있다";;
+  *) fail "transcript 진단 없음: $DIAG_ERR";;
+esac
+[ ! -d "$FREEZE_STATE_DIR/diagjob" ] && ok "추정 실패 시 예약 디렉토리를 안 만든다" || fail "예약 디렉토리가 생성됨"
+
+section "snap: transcript 없음·git 아님 — 기본 인자(모드 미지정)로도 예약을 건다(resume→ledger 자동 강등)"
+# --mode 를 아예 안 준다 — 이게 이 테스트의 핵심이다. resume(기본) 은 --resume <세션> 이
+# 계약이라 세션 탐지 실패가 원래 cmd_reserve 를 치명적으로 죽이는데, snap 은 사용자가
+# --mode 를 명시하지 않았다면 ledger 로 자동 강등해서라도 예약을 걸어야 한다("예약이
+# 걸리는 것이 handoff 품질보다 우선" 원칙과 동급). ledger 로 우회해 이 케이스를
+# 가리는 대신 기본 경로 자체가 살아있는지를 직접 확인한다.
+SNAP_NOGIT="$TMP/snap-nogit"
+mkdir -p "$SNAP_NOGIT"
+SNAP_OUT1=$(bash "$FZ" snap --cwd "$SNAP_NOGIT" --at +1h --job snapjob1 2>&1)
+case "$SNAP_OUT1" in
+  *"얼음(즉발)"*) ok "transcript·git 둘 다 없어도(모드 미지정) snap 성공";;
+  *) fail "snap 실패: $SNAP_OUT1";;
+esac
+case "$SNAP_OUT1" in
+  *"resume 에서 ledger 로 자동 강등"*) ok "자동 강등 사실이 stderr 로 안내됨";;
+  *) fail "강등 안내 없음: $SNAP_OUT1";;
+esac
+SNAP1_RES="$FREEZE_STATE_DIR/snapjob1/reservation.json"
+SNAP1_MODE=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$SNAP1_RES')).mode)")
+[ "$SNAP1_MODE" = "ledger" ] && ok "reservation.json 의 mode 가 실제로 ledger 로 강등됨" || fail "mode 강등 안 됨: got=$SNAP1_MODE"
+SNAP_HANDOFF1=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$SNAP1_RES')).handoff)")
+[ -f "$SNAP_HANDOFF1" ] && ok "snap 이 handoff 파일을 만들었고 reservation.json 의 handoff 필드가 그 경로를 가리킨다" || fail "handoff 파일 없음: $SNAP_HANDOFF1"
+grep -q "(transcript 없음)" "$SNAP_HANDOFF1" && ok "transcript 없음이 handoff 에 표시됨" || fail "transcript 없음 표시 안 됨: $(cat "$SNAP_HANDOFF1")"
+grep -q "git 워크트리 아님" "$SNAP_HANDOFF1" && ok "git 아닌 디렉토리에서도 handoff 가 만들어짐" || fail "git 아님 표시 없음: $(cat "$SNAP_HANDOFF1")"
+bash "$FZ" cancel snapjob1 >/dev/null
+
+section "snap: --mode resume 을 명시했는데 세션을 못 찾으면 강등하지 않고 실패한다"
+# 사용자가 명시로 고른 모드는 계약이다 — 위 테스트와 달리 자동 강등하면 안 되고,
+# 실패하되 handoff 는 이미 만들어졌다는 안내가 나가야 한다(앞서 고친 handoff 폴백과
+# 별개로, 예약 자체가 안 걸리는 건 이 케이스에선 의도된 동작이다).
+SNAP_RESUME_FAIL_OUT=$(bash "$FZ" snap --cwd "$SNAP_NOGIT" --at +1h --job snapresumefail --mode resume 2>&1) && SNAP_RESUME_FAIL_RC=0 || SNAP_RESUME_FAIL_RC=$?
+[ "$SNAP_RESUME_FAIL_RC" != 0 ] && ok "--mode resume 명시 + 세션 없음 → snap 이 비영 종료" || fail "실패해야 하는데 성공함: $SNAP_RESUME_FAIL_OUT"
+case "$SNAP_RESUME_FAIL_OUT" in
+  *"자동 강등"*) fail "명시 모드인데도 강등 안내가 나옴(강등되면 안 된다): $SNAP_RESUME_FAIL_OUT";;
+  *) ok "강등 안내 없음(명시 모드가 그대로 유지됨)";;
+esac
+case "$SNAP_RESUME_FAIL_OUT" in
+  *"handoff 는 만들어졌다"*) ok "실패해도 handoff 는 만들어졌다는 안내가 나감";;
+  *) fail "handoff 안내 없음: $SNAP_RESUME_FAIL_OUT";;
+esac
+[ ! -d "$FREEZE_STATE_DIR/snapresumefail" ] && ok "예약 디렉토리는 생성되지 않음" || fail "실패했는데 예약 디렉토리가 생김"
+
+section "snap: 합성 transcript 에서 사용자 요청·TodoWrite 를 뽑아낸다"
+# FAKE_CWD 는 파일 맨 위 픽스처가 이미 프로젝트 slug 디렉토리를 만들어 둔 곳이다.
+# 여기에 더 최근 시각의 transcript 를 하나 더 심어(ls -t 최신 우선) snap 이 그걸 읽게 한다.
+SNAP_SESSION="99999999-8888-7777-6666-555555555555"
+{
+  echo '{"type":"user","isMeta":true,"message":{"role":"user","content":"Stop hook feedback: 이건 사람이 친 게 아니라 제외돼야 한다"}}'
+  echo '{"type":"user","message":{"role":"user","content":"첫 번째 요청 — 오래된 것"}}'
+  echo '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"결과만 담긴 턴 — 제외돼야"}]}}'
+  echo '{"type":"assistant","message":{"content":[{"type":"text","text":"중간 어시스턴트 응답"}]}}'
+  echo '{"type":"user","message":{"role":"user","content":"두 번째 요청 — 가장 최근"}}'
+  echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"TodoWrite","input":{"todos":[{"content":"작업1","status":"completed"},{"content":"작업2","status":"pending"}]}}]}}'
+  echo 'broken json line { 이 줄은 깨져서 건너뛰어야 한다'
+} > "$PROJ/$SNAP_SESSION.jsonl"
+
+SNAP_OUT2=$(bash "$FZ" snap --cwd "$FAKE_CWD" --at +1h --job snapjob2 2>&1)
+case "$SNAP_OUT2" in
+  *"얼음(즉발)"*) ok "합성 transcript 로 snap 성공";;
+  *) fail "snap 실패: $SNAP_OUT2";;
+esac
+case "$SNAP_OUT2" in
+  *"자동 강등"*) fail "transcript 가 있는데도 강등이 일어남: $SNAP_OUT2";;
+  *) ok "transcript 가 있으면 강등 없이 진행됨";;
+esac
+SNAP2_RES="$FREEZE_STATE_DIR/snapjob2/reservation.json"
+SNAP2_MODE=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$SNAP2_RES')).mode)")
+[ "$SNAP2_MODE" = "resume" ] && ok "transcript 가 있으면 mode 가 기본값 resume 그대로 유지됨" || fail "mode 가 뜻밖에 바뀜: got=$SNAP2_MODE"
+SNAP2_SESSION=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$SNAP2_RES')).session_id)")
+[ "$SNAP2_SESSION" = "$SNAP_SESSION" ] && ok "reservation.json 의 session_id 가 합성 transcript 의 UUID 와 일치함" || fail "session_id 불일치: got=$SNAP2_SESSION want=$SNAP_SESSION"
+SNAP_HANDOFF2=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$SNAP2_RES')).handoff)")
+grep -q "첫 번째 요청" "$SNAP_HANDOFF2" && ok "오래된 사용자 요청이 handoff 에 있다" || fail "누락: $(cat "$SNAP_HANDOFF2")"
+grep -q "두 번째 요청" "$SNAP_HANDOFF2" && ok "가장 최근 사용자 요청이 handoff 에 있다" || fail "누락: $(cat "$SNAP_HANDOFF2")"
+grep -q "결과만 담긴 턴" "$SNAP_HANDOFF2" && fail "tool_result 만 있는 턴이 제외되지 않았다" || ok "tool_result 전용 턴이 제외됐다"
+grep -q "Stop hook feedback" "$SNAP_HANDOFF2" && fail "isMeta 턴이 제외되지 않았다" || ok "isMeta 턴이 제외됐다"
+grep -q "중간 어시스턴트 응답" "$SNAP_HANDOFF2" && ok "직전 어시스턴트 발언이 handoff 에 있다" || fail "누락: $(cat "$SNAP_HANDOFF2")"
+grep -q -- "- \[x\] 작업1" "$SNAP_HANDOFF2" && ok "완료된 TodoWrite 항목이 [x] 로 표기됨" || fail "TodoWrite [x] 표기 없음: $(cat "$SNAP_HANDOFF2")"
+grep -q -- "- \[ \] 작업2" "$SNAP_HANDOFF2" && ok "미완료 TodoWrite 항목이 [ ] 로 표기됨" || fail "TodoWrite [ ] 표기 없음: $(cat "$SNAP_HANDOFF2")"
+bash "$FZ" cancel snapjob2 >/dev/null
+rm -f "$PROJ/$SNAP_SESSION.jsonl"
+
+section "snap: --chain-left 를 주면 arm 경로를 타 chain 필드가 붙는다"
+SNAP_OUT3=$(bash "$FZ" snap --cwd "$SNAP_NOGIT" --at +1h --job snapjob3 --mode ledger --chain-left 3 2>&1)
+case "$SNAP_OUT3" in
+  *"얼음(즉발)"*) ok "--chain-left 로도 snap 성공";;
+  *) fail "snap 실패: $SNAP_OUT3";;
+esac
+SNAP3_RES="$FREEZE_STATE_DIR/snapjob3/reservation.json"
+CHAIN_VAL=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$SNAP3_RES')).chain)")
+CHAIN_LEFT_VAL=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$SNAP3_RES')).chain_left)")
+VIA_VAL=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$SNAP3_RES')).via)")
+[ "$CHAIN_VAL" = "1" ] && [ "$CHAIN_LEFT_VAL" = "3" ] && [ "$VIA_VAL" = "arm" ] && ok "chain/chain_left/via 필드로 arm 경로를 탔음을 확인" || fail "chain 필드 이상: chain=$CHAIN_VAL chain_left=$CHAIN_LEFT_VAL via=$VIA_VAL"
+bash "$FZ" cancel snapjob3 >/dev/null
+
+section "snap: --waker codex 가 reservation.json 에 반영된다 (S2 가 열어둔 자리를 S4 가 실제로 채웠는지)"
+SNAP_OUT4=$(bash "$FZ" snap --cwd "$SNAP_NOGIT" --at +1h --job snapjob4 --mode ledger --waker codex 2>&1)
+case "$SNAP_OUT4" in
+  *"얼음(즉발)"*) ok "--waker codex 로도 snap 성공";;
+  *) fail "snap 실패: $SNAP_OUT4";;
+esac
+SNAP4_WAKER=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$FREEZE_STATE_DIR/snapjob4/reservation.json')).waker)")
+[ "$SNAP4_WAKER" = "codex" ] && ok "snap 이 --waker 를 reserve 에 실제로 전달한다" || fail "snap 의 waker 전달 실패: got=$SNAP4_WAKER"
+bash "$FZ" cancel snapjob4 >/dev/null
+
+section "snap: gen_snap_handoff(node) 가 실패해도(디스크·권한 문제) set -e 에 안 죽고 예약이 걸린다"
+# --out 디렉토리를 쓰기 불가로 만들어 gen_snap_handoff 의 마지막 fs.writeFileSync 만
+# 실패하게 한다(파싱·git 수집은 이미 각자 try/catch 로 감싸져 있어 이 지점 전엔 안 죽는다 —
+# 이 테스트가 실제로 검증하는 건 그 "마지막 쓰기" 실패가 cmd_snap 전체를 죽이지 않는다는 것).
+SNAP_RO_DIR="$TMP/snap-readonly-out"
+mkdir -p "$SNAP_RO_DIR"
+chmod 555 "$SNAP_RO_DIR"
+SNAP_FAIL_OUT=$(bash "$FZ" snap --cwd "$SNAP_NOGIT" --at +1h --job snapfailjob --mode ledger --out "$SNAP_RO_DIR/handoff.md" 2>&1) && SNAP_FAIL_RC=0 || SNAP_FAIL_RC=$?
+chmod 755 "$SNAP_RO_DIR"   # 아래 cancel/cleanup 이 이 디렉토리를 건드릴 수 있으니 먼저 복구
+[ "$SNAP_FAIL_RC" = 0 ] && ok "handoff 자동생성 실패해도 snap 자체는 성공(rc=0)" || fail "snap 이 죽어버림: rc=$SNAP_FAIL_RC — $SNAP_FAIL_OUT"
+case "$SNAP_FAIL_OUT" in
+  *"얼음(즉발)"*) ok "예약이 실제로 걸림";;
+  *) fail "예약 출력 없음: $SNAP_FAIL_OUT";;
+esac
+[ -f "$FREEZE_STATE_DIR/snapfailjob/reservation.json" ] && ok "reservation.json 이 생성됨" || fail "reservation.json 없음"
+SNAP_FAIL_HANDOFF=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$FREEZE_STATE_DIR/snapfailjob/reservation.json')).handoff)")
+[ -f "$SNAP_FAIL_HANDOFF" ] && ok "폴백 handoff 파일이 실제로 존재함: $SNAP_FAIL_HANDOFF" || fail "폴백 handoff 파일 없음: $SNAP_FAIL_HANDOFF"
+grep -q "^## 하던 일$" "$SNAP_FAIL_HANDOFF" && grep -q "^## 완료 지점$" "$SNAP_FAIL_HANDOFF" && grep -q "^## 다음 단계$" "$SNAP_FAIL_HANDOFF" && grep -q "^## 검증$" "$SNAP_FAIL_HANDOFF" \
+  && ok "폴백 handoff 도 네 섹션 제목 골격을 갖춤" || fail "폴백 handoff 섹션 제목 누락: $(cat "$SNAP_FAIL_HANDOFF")"
+bash "$FZ" cancel snapfailjob >/dev/null
+
+section "snap: \$out 디렉토리도 못 쓰면 STATE_ROOT 아래로 대피해서라도 예약을 건다"
+# 위 테스트와 달리 --out 디렉토리에 bash 의 write_snap_fallback_handoff 마저 못 쓰는
+# 상황(동일하게 555) — cmd_snap 이 STATE_ROOT/snap-fallback-*.md 로 옮겨 써야 한다.
+SNAP_RO_DIR2="$TMP/snap-readonly-out2"
+mkdir -p "$SNAP_RO_DIR2"
+chmod 555 "$SNAP_RO_DIR2"
+SNAP_FAIL_OUT2=$(bash "$FZ" snap --cwd "$SNAP_NOGIT" --at +1h --job snapfailjob2 --mode ledger --out "$SNAP_RO_DIR2/handoff.md" 2>&1) && SNAP_FAIL_RC2=0 || SNAP_FAIL_RC2=$?
+chmod 755 "$SNAP_RO_DIR2"
+[ "$SNAP_FAIL_RC2" = 0 ] && ok "out 디렉토리 전체가 안 써져도 snap 은 성공" || fail "snap 이 죽어버림: rc=$SNAP_FAIL_RC2 — $SNAP_FAIL_OUT2"
+SNAP_FAIL_HANDOFF2=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$FREEZE_STATE_DIR/snapfailjob2/reservation.json')).handoff)" 2>/dev/null || true)
+case "$SNAP_FAIL_HANDOFF2" in
+  "$FREEZE_STATE_DIR"/snap-fallback-*) ok "handoff 가 STATE_ROOT 대피 경로로 옮겨짐: $SNAP_FAIL_HANDOFF2" ;;
+  *) fail "STATE_ROOT 대피가 안 됨: $SNAP_FAIL_HANDOFF2" ;;
+esac
+[ -n "$SNAP_FAIL_HANDOFF2" ] && [ -f "$SNAP_FAIL_HANDOFF2" ] && ok "대피된 handoff 파일이 실제로 존재함" || fail "대피된 handoff 파일 없음"
+bash "$FZ" cancel snapfailjob2 >/dev/null
+
+section "snap: 세션 탐지 실패로 ledger 강등된 handoff 는 재개 프롬프트도 '원장 아님' 으로 갈린다 (MAJOR B 회귀)"
+# snap 이 만드는 handoff(## 하던 일/완료 지점/다음 단계/검증 4섹션)는 wfledger.sh init 이
+# 만드는 원장(## 워크플로우 런 절 등)과 모양이 다르다. mode=ledger 인데 이 handoff 를
+# 그대로 기존 원장 재개 프롬프트에 태우면 재개 세션이 존재하지 않는 "## 워크플로우 런"
+# 섹션을 찾거나 원장이 아닌 파일에 wfledger.sh set-session 을 부르게 된다 — thaw.sh 의
+# is_real_wfledger(<!-- freeze-ledger v1 --> 마커 유무)가 이를 갈라야 한다.
+: > "$CALLS"
+SNAP_LEDGER_JOB=snapledgerdowngradejob
+SNAP_OUT5=$(bash "$FZ" snap --cwd "$SNAP_NOGIT" --at +2s --pad 0 --job "$SNAP_LEDGER_JOB" 2>&1)
+case "$SNAP_OUT5" in
+  *"resume 에서 ledger 로 자동 강등"*) ok "이 케이스도 자동 강등됨(전제 확인)";;
+  *) fail "전제 실패 — 강등 안 됨: $SNAP_OUT5";;
+esac
+for i in $(seq 1 "$POLL_TRIES"); do
+  ST=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$FREEZE_STATE_DIR/$SNAP_LEDGER_JOB/reservation.json')).status)")
+  [ "$ST" = "done" ] && break
+  sleep 1
+done
+[ "$ST" = "done" ] && ok "강등된 ledger 예약도 재개 완주" || fail "재개 실패: $ST"
+grep -q "이 문서는 wfledger 원장이 아니다" "$CALLS" && ok "재개 프롬프트가 '원장 아님' 을 명시함" || fail "프롬프트에 원장 아님 표식 없음: $(cat "$CALLS" 2>/dev/null)"
+grep -q -- "set-session" "$CALLS" && fail "원장이 아닌 handoff 인데도 wfledger.sh set-session 지시가 나감(회귀)" || ok "wfledger.sh set-session 지시가 나가지 않음"
+# 부정 프롬프트 자체가 "워크플로우 런 등록 불필요" 라고 말하므로 맨 단어로 재면 오탐이다.
+# 실제로 막아야 할 것은 존재하지 않는 섹션을 "찾으라"는 지시라서 '## 워크플로우 런' 으로 좁힌다.
+grep -q "## 워크플로우 런" "$CALLS" && fail "원장이 아닌 handoff 인데도 '## 워크플로우 런' 섹션을 찾으라는 지시가 나감(회귀)" || ok "'## 워크플로우 런' 섹션 지시가 나가지 않음"
+bash "$FZ" cancel "$SNAP_LEDGER_JOB" > /dev/null 2>&1 || true
+
+section "codex waker"
+# thaw.sh 가 "ambiguous"/취소로 멈출 때 선무장된 다음 창(NEXT_JOB) 취소는 자기 status
+# 를 먼저 쓴 "다음" 별도 명령(freeze.sh cancel)으로 일어난다 — 부모 status 전환이
+# 보였다고 그 취소까지 이미 반영됐다는 보장은 없다(관측 순간과 순간 사이의 간극).
+# 자식 status 를 직접 짧게 폴링해 이 간극을 흡수한다.
+wait_child_cancelled() {  # wait_child_cancelled <reservation.json 경로>
+  local p="$1" st i
+  for i in $(seq 1 "$POLL_TRIES"); do
+    st=$(node -e "console.log(JSON.parse(require('fs').readFileSync(process.argv[1])).status)" "$p" 2>/dev/null || echo "")
+    [ "$st" = "cancelled" ] && { echo "cancelled"; return 0; }
+    sleep 0.5
+  done
+  echo "${st:-MISSING}"
+}
+
+# 가짜 codex — 실제 codex 처럼 "런북을 읽고 실행할 명령 코드블록을 셸에 그대로
+# 실행"한다(codex-wake.sh 의 프롬프트에서 런북 경로를 뽑는다). 이 명령은 이제
+# do-resume.sh 호출 한 줄뿐이므로, 이 목을 통해 do-resume.sh 가 실제로 claude 를
+# 부르는 전체 경로(BLOCKER 1/2 수정분 포함)를 그대로 검증한다.
+CODEX_CALLS="$TMP/codex-calls.log"
+export CODEX_CALLS_FILE="$CODEX_CALLS"
+MOCK_CODEX="$TMP/mock-codex"
+cat > "$MOCK_CODEX" <<'CODEXEOF'
+#!/usr/bin/env bash
+echo "$@" >> "$CODEX_CALLS_FILE"
+prompt="${@: -1}"
+runbook=$(printf '%s' "$prompt" | grep -oE '\S*wake-runbook\.md')
+jobdir=$(dirname "$runbook")
+cmd=""
+[ -f "$runbook" ] && cmd=$(awk '/^```bash$/{f=1;next} /^```$/{if(f){f=0}} f' "$runbook")
+case "${CODEX_MODE:-}" in
+  crash)
+    # 런북을 읽기도 전에 codex 자체가 죽는 시나리오 — do-resume.sh 를 아예 안 부른다.
+    exit 1
+    ;;
+  cancel_during_fallback)
+    # codex 가 실패하는 바로 그 순간 사용자가 취소한 상황을 결정적으로 재현한다
+    # (run_probe() 의 폴백 취소 분기, MAJOR 2 검증용).
+    node -e "
+const fs=require('fs'), p='$jobdir/reservation.json';
+const d=JSON.parse(fs.readFileSync(p)); d.status='cancelled';
+fs.writeFileSync(p, JSON.stringify(d,null,2));"
+    exit 1
+    ;;
+  cancel_before_doresume)
+    # codex-wake.sh 자신의 취소 검사(codex exec 를 부르기 전)는 이미 통과한 뒤,
+    # 이 mock codex 가 do-resume.sh(런북의 $cmd)를 "부르기 직전"에 예약을 취소한다.
+    # do-resume.sh 자신의 취소 검사(claude 를 부르기 직전)가 잡아내는지 검증한다
+    # (BLOCKER C item 1 — "do-resume 이 불린 직후 취소되는 상황").
+    node -e "
+const fs=require('fs'), p='$jobdir/reservation.json';
+const d=JSON.parse(fs.readFileSync(p)); d.status='cancelled';
+fs.writeFileSync(p, JSON.stringify(d,null,2));"
+    bash -c "$cmd" </dev/null
+    exit $?
+    ;;
+  nonce_mismatch)
+    # codex 가 do-resume.sh 를 두 번 부르는 상황(자기 나름의 재시도)을 재현한다 —
+    # 1차는 정상 성공(verdict nonce=A, resumed:true), 2차는 claude 호출 성공 "직후"
+    # 죽어(FREEZE_TEST_KILL_AFTER_RESUME) verdict 를 못 남긴다. 그 결과 최종
+    # attempt.json 은 2차 nonce(B) 인데 verdict.json 은 여전히 1차 nonce(A) 로 남아
+    # "옛 판정"이 된다 — resumed:true 라는 옛 판정이 있어도 thaw 는 이걸 성공으로
+    # 오인하면 안 된다(MAJOR 1 검증용).
+    bash -c "$cmd" </dev/null
+    FREEZE_TEST_KILL_AFTER_RESUME=1 bash -c "$cmd" </dev/null
+    exit 0
+    ;;
+  *)
+    bash -c "$cmd" </dev/null
+    exit 0
+    ;;
+esac
+CODEXEOF
+chmod +x "$MOCK_CODEX"
+export FREEZE_CODEX_BIN="$MOCK_CODEX"
+
+echo "-- codex 가 do-resume.sh 를 통해 정상 재개하면 haiku 프로브를 건너뛰고, 체인 자식도 waker=codex 를 물려받는다 --"
+: > "$CALLS"; : > "$CODEX_CALLS"
+unset CODEX_MODE
+echo "# h" > "$HANDOFF"
+CODEXJOB=codexwakejob
+bash "$FZ" arm --cwd "$FAKE_CWD" --handoff "$HANDOFF" --job "$CODEXJOB" --chain-left 1 --at +2s --session "$SESSION" --waker codex > /dev/null
+WAKER_STORED=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$FREEZE_STATE_DIR/$CODEXJOB/reservation.json')).waker)")
+[ "$WAKER_STORED" = "codex" ] && ok "arm 이 --waker codex 를 reservation.json 에 저장" || fail "waker 필드 이상: $WAKER_STORED"
+for i in $(seq 1 "$POLL_TRIES"); do
+  ST=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$FREEZE_STATE_DIR/$CODEXJOB/reservation.json')).status)")
+  [ "$ST" = "done" ] && break
+  sleep 1
+done
+[ "$ST" = "done" ] && ok "codexwakejob 완주 (status=done)" || fail "codexwakejob status=$ST"
+[ -f "$FREEZE_STATE_DIR/$CODEXJOB/resume-attempt.json" ] && ok "do-resume.sh 가 resume-attempt.json 을 남김" || fail "resume-attempt.json 없음"
+grep -q -- "--resume $SESSION" "$CALLS" && ok "do-resume.sh 가 실제로 claude 를 배열형 argv 로 호출함" || fail "claude 호출 흔적 없음: $(cat "$CALLS" 2>/dev/null)"
+grep -q -- "--model haiku" "$CALLS" && fail "codex 가 성공했는데도 haiku 프로브가 호출됐다" || ok "codex 성공 시 haiku 프로브를 건너뛴다"
+NEXT_WAKER=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$FREEZE_STATE_DIR/${CODEXJOB}-c0/reservation.json')).waker)")
+[ "$NEXT_WAKER" = "codex" ] && ok "체인 자식 예약도 waker=codex 를 물려받음" || fail "체인 전파 실패: got=$NEXT_WAKER"
+NEXT_JOB_FIELD=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$FREEZE_STATE_DIR/$CODEXJOB/reservation.json')).next_job)")
+[ "$NEXT_JOB_FIELD" = "${CODEXJOB}-c0" ] && ok "부모 reservation.json 에 next_job 이 기록됨(MAJOR 2 전제)" || fail "next_job 필드 이상: $NEXT_JOB_FIELD"
+bash "$FZ" cancel "${CODEXJOB}-c0" > /dev/null 2>&1 || true
+
+echo "-- do-resume.sh 를 통해 claude 가 명확히 실패(rc!=0)하면 thaw 가 bash 경로(프로브+재개)로 폴백해 성공한다 --"
+: > "$CALLS"; : > "$CODEX_CALLS"
+FAILTHENOK_CLAUDE="$TMP/mock-claude-failthenok"
+FAILTHENOK_MARK="$TMP/failthenok.mark"
+rm -f "$FAILTHENOK_MARK"
+cat > "$FAILTHENOK_CLAUDE" <<EOF
+#!/usr/bin/env bash
+echo "\$@" >> "$CALLS"
+if [ ! -f "$FAILTHENOK_MARK" ]; then
+  touch "$FAILTHENOK_MARK"
+  # MAJOR G — do-resume.sh 는 이제 출력 "앞부분"에서 한도/인증 배너를 확실히 잡을
+  # 때만 preflight_fail(재시도·폴백 가능)로 본다. 이 목이 아무 출력 없이 그냥
+  # exit 9 만 하면 do-resume.sh 가 ambiguous 로 분류해 폴백하지 않으므로(의도된
+  # 동작), 이 테스트가 검증하려는 "명확한 실패 → 폴백" 시나리오를 재현하려면 실제
+  # claude 가 사전 거절할 때처럼 한도 배너를 출력 맨 앞에 남겨야 한다.
+  echo "Claude AI usage limit reached. Try again later."
+  exit 9
+fi
+exit 0
+EOF
+chmod +x "$FAILTHENOK_CLAUDE"
+echo "# h" > "$HANDOFF"
+CODEXJOB2=codexfallbackjob
+FREEZE_CLAUDE_BIN="$FAILTHENOK_CLAUDE" bash "$FZ" arm --cwd "$FAKE_CWD" --handoff "$HANDOFF" --job "$CODEXJOB2" --chain-left 1 --at +2s --session "$SESSION" --waker codex > /dev/null
+for i in $(seq 1 40); do
+  ST=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$FREEZE_STATE_DIR/$CODEXJOB2/reservation.json')).status)")
+  [ "$ST" = "done" ] && break
+  sleep 1
+done
+[ "$ST" = "done" ] && ok "do-resume.sh 의 명확한 실패 후 bash 폴백으로 완주" || fail "codexfallbackjob status=$ST"
+grep -q -- "--model haiku" "$CALLS" && ok "폴백 구간에서 haiku 프로브가 호출됨" || fail "폴백 프로브 없음: $(cat "$CALLS" 2>/dev/null)"
+RESUME_COUNT2=$(grep -c -- "--resume $SESSION" "$CALLS" || true)
+[ "$RESUME_COUNT2" = 2 ] && ok "재개 호출이 정확히 2번(do-resume 1회 실패 + 폴백 1회 성공)" || fail "재개 호출 횟수=$RESUME_COUNT2 (기대 2)"
+bash "$FZ" cancel "${CODEXJOB2}-c0" > /dev/null 2>&1 || true
+
+echo "-- claude 가 세션을 열어 일을 하다가 끝에서 실패하면(한도/인증 배너 없이 rc!=0) ambiguous 로 멈추고 재시도·폴백하지 않는다 (MAJOR G 회귀) --"
+# 예전엔 resumed:false 하나만 보고 "그 외 오류는 한 번만 재시도" 라고 판단해, codex
+# 가 한 번 더 부르고 그래도 실패하면 thaw 가 다시 run_probe+run_resume 을 돌았다 —
+# 같은 세션을 최대 3번 여는 사고. 이 목은 "일을 실제로 했다"는 흔적(작업 로그 같은
+# 평범한 텍스트)만 남기고 exit 1 로 죽는다 — 한도·인증 배너가 전혀 없으므로
+# do-resume.sh 가 반드시 ambiguous 로 분류해야 하고, 그러면 codex 도 thaw 도 재시도·
+# 폴백을 하면 안 된다.
+: > "$CALLS"; : > "$CODEX_CALLS"
+unset CODEX_MODE
+DIDWORK_CLAUDE="$TMP/mock-claude-didwork"
+cat > "$DIDWORK_CLAUDE" <<EOF
+#!/usr/bin/env bash
+echo "\$@" >> "$CALLS"
+echo "파일을 3개 수정하고 테스트를 돌렸다..."
+echo "테스트 2개가 실패해서 고치는 중..."
+exit 1
+EOF
+chmod +x "$DIDWORK_CLAUDE"
+echo "# h" > "$HANDOFF"
+CODEXJOB7B=codexambiguouswork
+FREEZE_CLAUDE_BIN="$DIDWORK_CLAUDE" bash "$FZ" arm --cwd "$FAKE_CWD" --handoff "$HANDOFF" --job "$CODEXJOB7B" --chain-left 1 --at +2s --session "$SESSION" --waker codex > /dev/null
+for i in $(seq 1 "$POLL_TRIES"); do
+  ST=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$FREEZE_STATE_DIR/$CODEXJOB7B/reservation.json')).status)")
+  [ "$ST" = "ambiguous" ] && break
+  sleep 1
+done
+[ "$ST" = "ambiguous" ] && ok "일을 하다 실패한 세션은 status=ambiguous 로 멈춤(재시도·폴백 안 함)" || fail "codexambiguouswork status=$ST"
+RESUME_COUNTG=$(grep -c -- "--resume $SESSION" "$CALLS" || true)
+[ "$RESUME_COUNTG" = 1 ] && ok "재개 호출이 정확히 1번뿐 — 이미 일을 했을 수 있는 세션을 재재개하지 않음" || fail "재개 호출 횟수=$RESUME_COUNTG (기대 1, 이중/삼중 재개 의심)"
+GVERDICT_OUTCOME=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$FREEZE_STATE_DIR/$CODEXJOB7B/wake-verdict.json')).outcome)")
+[ "$GVERDICT_OUTCOME" = "ambiguous" ] && ok "do-resume.sh 가 verdict.outcome 을 ambiguous 로 남김" || fail "outcome 이상: $GVERDICT_OUTCOME"
+CHILD7B_STATUS=$(wait_child_cancelled "$FREEZE_STATE_DIR/${CODEXJOB7B}-c0/reservation.json")
+[ "$CHILD7B_STATUS" = "cancelled" ] && ok "ambiguous 로 멈출 때 선무장된 다음 창도 함께 취소됨" || fail "다음 창이 취소되지 않음: $CHILD7B_STATUS"
+
+echo "-- codex 가 런북조차 못 읽고(do-resume.sh 를 부르지도 못하고) 죽으면 thaw 가 bash 경로로 폴백한다 --"
+: > "$CALLS"; : > "$CODEX_CALLS"
+export CODEX_MODE=crash
+echo "# h" > "$HANDOFF"
+CODEXJOB3=codexcrashjob
+bash "$FZ" arm --cwd "$FAKE_CWD" --handoff "$HANDOFF" --job "$CODEXJOB3" --chain-left 1 --at +2s --session "$SESSION" --waker codex > /dev/null
+for i in $(seq 1 40); do
+  ST=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$FREEZE_STATE_DIR/$CODEXJOB3/reservation.json')).status)")
+  [ "$ST" = "done" ] && break
+  sleep 1
+done
+[ "$ST" = "done" ] && ok "codex 크래시(시도 흔적 없음) 후에도 bash 폴백으로 완주" || fail "codexcrashjob status=$ST"
+[ ! -f "$FREEZE_STATE_DIR/$CODEXJOB3/resume-attempt.json" ] && ok "시도 흔적(resume-attempt.json) 자체가 없는 상태였음을 확인" || fail "resume-attempt.json 이 있으면 안 되는데 있음"
+grep -q -- "--resume $SESSION" "$CALLS" && ok "시도 흔적이 없으면 폴백 재개가 호출됨" || fail "폴백 재개 없음: $(cat "$CALLS" 2>/dev/null)"
+bash "$FZ" cancel "${CODEXJOB3}-c0" > /dev/null 2>&1 || true
+
+echo "-- claude 재개가 성공한 뒤 판정을 못 쓰고 죽으면(ambiguous) thaw 가 재개를 다시 부르지 않는다 (BLOCKER 1 회귀) --"
+: > "$CALLS"; : > "$CODEX_CALLS"
+unset CODEX_MODE
+export FREEZE_TEST_KILL_AFTER_RESUME=1
+echo "# h" > "$HANDOFF"
+CODEXJOB5=codexambiguousjob
+bash "$FZ" arm --cwd "$FAKE_CWD" --handoff "$HANDOFF" --job "$CODEXJOB5" --chain-left 1 --at +2s --session "$SESSION" --waker codex > /dev/null
+for i in $(seq 1 "$POLL_TRIES"); do
+  ST=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$FREEZE_STATE_DIR/$CODEXJOB5/reservation.json')).status)")
+  [ "$ST" = "ambiguous" ] && break
+  sleep 1
+done
+unset FREEZE_TEST_KILL_AFTER_RESUME
+[ "$ST" = "ambiguous" ] && ok "claude 성공 직후 판정 유실 시 status=ambiguous 로 멈춤(done 으로 오판하지 않음)" || fail "codexambiguousjob status=$ST"
+RESUME_COUNT5=$(grep -c -- "--resume $SESSION" "$CALLS" || true)
+[ "$RESUME_COUNT5" = 1 ] && ok "재개 호출이 정확히 1번뿐 — ambiguous 상태에서 재재개(이중 재개)하지 않음" || fail "재개 호출 횟수=$RESUME_COUNT5 (기대 1, 이중 재개 의심)"
+CHILD5_STATUS=$(wait_child_cancelled "$FREEZE_STATE_DIR/${CODEXJOB5}-c0/reservation.json")
+[ "$CHILD5_STATUS" = "cancelled" ] && ok "ambiguous 로 멈출 때 선무장된 다음 창도 함께 취소됨" || fail "다음 창이 취소되지 않음: $CHILD5_STATUS"
+
+echo "-- 옛 wake-verdict.json(nonce 불일치)이 남아 있어도 성공으로 오판하지 않는다 (MAJOR 1 회귀) --"
+: > "$CALLS"; : > "$CODEX_CALLS"
+export CODEX_MODE=nonce_mismatch
+echo "# h" > "$HANDOFF"
+CODEXJOB6=codexnoncejob
+bash "$FZ" arm --cwd "$FAKE_CWD" --handoff "$HANDOFF" --job "$CODEXJOB6" --chain-left 1 --at +2s --session "$SESSION" --waker codex > /dev/null
+for i in $(seq 1 "$POLL_TRIES"); do
+  ST=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$FREEZE_STATE_DIR/$CODEXJOB6/reservation.json')).status)")
+  [ "$ST" = "ambiguous" ] && break
+  sleep 1
+done
+[ "$ST" = "ambiguous" ] && ok "옛(nonce 불일치) resumed:true 판정이 남아 있어도 ambiguous 로 멈춤" || fail "codexnoncejob status=$ST"
+RESUME_COUNT6=$(grep -c -- "--resume $SESSION" "$CALLS" || true)
+[ "$RESUME_COUNT6" = 2 ] && ok "재개 호출이 정확히 2번(codex 의 두 do-resume 호출)뿐 — thaw 가 추가로 재재개하지 않음" || fail "재개 호출 횟수=$RESUME_COUNT6 (기대 2)"
+ATTEMPT_NONCE=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$FREEZE_STATE_DIR/$CODEXJOB6/resume-attempt.json')).nonce)")
+VERDICT_NONCE=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$FREEZE_STATE_DIR/$CODEXJOB6/wake-verdict.json')).nonce)")
+[ "$ATTEMPT_NONCE" != "$VERDICT_NONCE" ] && ok "실제로 nonce 가 불일치하는 상태였음을 확인(테스트가 의도한 상황 재현됨)" || fail "nonce 가 우연히 같아졌다 — 테스트 재설계 필요: $ATTEMPT_NONCE / $VERDICT_NONCE"
+CHILD6_STATUS=$(wait_child_cancelled "$FREEZE_STATE_DIR/${CODEXJOB6}-c0/reservation.json")
+[ "$CHILD6_STATUS" = "cancelled" ] && ok "ambiguous 로 멈출 때 이 경우도 다음 창이 함께 취소됨" || fail "다음 창이 취소되지 않음: $CHILD6_STATUS"
+
+echo "-- 같은 job 이름으로 재예약하면 옛 wake-verdict.json(resumed:true) 이 남아있어도 성공으로 오판하지 않는다 (BLOCKER A 회귀) --"
+# 1차: codex 경로로 정상 완주해 wake-verdict.json(resumed:true) 을 남긴다(다음 창을
+# 흉내내는 재예약의 "옛 판정"이 될 재료). --chain-left 를 안 줘서(plain reserve) 체인
+# 자식이 안 생기게 한다 — 이 테스트의 관심사는 재예약 자체지 체인이 아니다.
+: > "$CALLS"; : > "$CODEX_CALLS"
+unset CODEX_MODE
+REUSEJOB=reuseblockerjob
+echo "# h" > "$HANDOFF"
+bash "$FZ" reserve --at +2s --pad 0 --cwd "$FAKE_CWD" --handoff "$HANDOFF" --job "$REUSEJOB" --session "$SESSION" --waker codex > /dev/null
+for i in $(seq 1 "$POLL_TRIES"); do
+  ST=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$FREEZE_STATE_DIR/$REUSEJOB/reservation.json')).status)")
+  [ "$ST" = "done" ] && break
+  sleep 1
+done
+[ "$ST" = "done" ] && ok "1차 codex 재개 완주(다음 단계를 위한 준비)" || fail "1차 재개가 안 끝나서 테스트 전제를 못 만듦: $ST"
+OLD_VERDICT_RESUMED=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$FREEZE_STATE_DIR/$REUSEJOB/wake-verdict.json')).resumed)" 2>/dev/null || true)
+[ "$OLD_VERDICT_RESUMED" = "true" ] && ok "1차가 wake-verdict.json(resumed:true) 을 남김(전제 확인)" || fail "전제 실패 — resumed=$OLD_VERDICT_RESUMED"
+
+# 2차: 같은 job 이름으로 재예약하되, 이번엔 codex 실행 파일이 아예 없는 환경(다음 창
+# 흉내). BLOCKER A 수정 전엔 cmd_reserve 가 wake-verdict.json 을 안 지워서, codex-wake.sh
+# 가 codex 실행 파일을 못 찾아 exit 2 로 나가도 thaw 가 남아있는 옛 resumed:true 를
+# 이번 실행 결과로 오인해 claude 를 한 번도 안 부르고 성공(done)으로 끝냈다.
+: > "$CALLS"
+REUSE_STRIPPED_PATH=$(printf '%s' "$PATH" | tr ':' '\n' | while IFS= read -r d; do [ -x "$d/codex" ] || printf '%s\n' "$d"; done | paste -sd: -)
+REUSE_NO_HOME="$TMP/reuse-nohome"; mkdir -p "$REUSE_NO_HOME"
+unset FREEZE_CODEX_BIN
+HOME="$REUSE_NO_HOME" PATH="$REUSE_STRIPPED_PATH" bash "$FZ" reserve --at +2s --pad 0 --cwd "$FAKE_CWD" --handoff "$HANDOFF" --job "$REUSEJOB" --session "$SESSION" --waker codex > /dev/null
+[ -f "$FREEZE_STATE_DIR/$REUSEJOB/wake-verdict.json" ] && fail "재예약 시점에 옛 wake-verdict.json 이 안 지워짐(BLOCKER A 회귀)" || ok "재예약 시점에 옛 wake-verdict.json 이 지워짐"
+[ -f "$FREEZE_STATE_DIR/$REUSEJOB/resume-attempt.json" ] && fail "재예약 시점에 옛 resume-attempt.json 이 안 지워짐(BLOCKER A 회귀)" || ok "재예약 시점에 옛 resume-attempt.json 이 지워짐"
+for i in $(seq 1 40); do
+  ST=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$FREEZE_STATE_DIR/$REUSEJOB/reservation.json')).status)")
+  [ "$ST" = "done" ] && break
+  sleep 1
+done
+[ "$ST" = "done" ] && ok "2차(codex 실행 파일 없음)도 bash 폴백으로 완주" || fail "2차 재개 실패: $ST"
+grep -q -- "--resume $SESSION" "$CALLS" && ok "옛 성공 판정이 남아있어도 claude 가 실제로 다시 호출됨(성공 오판 안 함)" || fail "claude 가 실제로 호출되지 않음 — 옛 판정을 성공으로 오판했을 위험: $(cat "$CALLS" 2>/dev/null)"
+export FREEZE_CODEX_BIN="$MOCK_CODEX"
+
+echo "-- 따옴표·공백이 섞인 새 job 이름은 reserve/arm 이 거부한다 (MINOR L 회귀) --"
+# MINOR L 이전엔 이런 이름도 그대로 받아들여져 codex-wake.sh 가 printf %q 로 이스케이프한
+# 뒤 런북에 심었다(BLOCKER 2). 이제는 애초에 이런 이름으로 "새" 예약을 만들지 못하게
+# 막는다 — job 이름이 상태 디렉토리 이름으로도 쓰이니 제한하는 편이 안전하다는 판단.
+: > "$CALLS"; : > "$CODEX_CALLS"
+unset CODEX_MODE
+QUOTE_DIR="$TMP/quote work dir"
+mkdir -p "$QUOTE_DIR"
+QUOTE_HANDOFF="$QUOTE_DIR/it's a \"handoff\".md"
+echo "# quoted handoff" > "$QUOTE_HANDOFF"
+QUOTEJOB="say \"hi\" it's a job"
+UNSAFE_JOB_OUT=$(bash "$FZ" arm --cwd "$FAKE_CWD" --handoff "$QUOTE_HANDOFF" --job "$QUOTEJOB" --chain-left 1 --at +2s --session "$SESSION" --waker codex 2>&1) && UNSAFE_JOB_RC=0 || UNSAFE_JOB_RC=$?
+[ "$UNSAFE_JOB_RC" != 0 ] && ok "따옴표·공백이 섞인 job 이름은 arm 이 거부함" || fail "위험한 job 이름이 받아들여짐: $UNSAFE_JOB_OUT"
+[ ! -d "$FREEZE_STATE_DIR/$QUOTEJOB" ] && ok "거부됐으니 예약 디렉토리도 생기지 않음" || fail "거부됐는데 디렉토리가 생김"
+case "$UNSAFE_JOB_OUT" in
+  *"허용한다"*) ok "에러 메시지가 허용 문자셋을 안내함";;
+  *) fail "안내 메시지 없음: $UNSAFE_JOB_OUT";;
+esac
+
+echo "-- 그래도 이미 존재하는(레거시) job 이름에 위험한 문자가 섞여 있으면 do-resume.sh/codex-wake.sh 의 %q 이스케이프가 계속 지켜준다 (BLOCKER 2 회귀 — MINOR L 이전에 만들어졌을 수 있는 예약 대비) --"
+# MINOR L 은 "새로" 만드는 job 이름만 막는다 — 이미 존재하는 job 디렉토리(과거 버전이
+# 만들었을 수 있는)까지 안전해야 하므로, cmd_reserve/arm 을 거치지 않고 reservation.json
+# 을 직접 써서 그 경로를 재현한다. 공백이 섞이면 이 mock codex 스크립트 자신의 아주
+# 단순한 정규식(\S*wake-runbook\.md)이 경로를 못 잘라내(실제 codex 는 자연어를 읽으니
+# 문제없지만 이 목은 아니다) 애초에 codex 를 못 흉내내므로, 공백 없이 따옴표만 섞는다.
+: > "$CALLS"; : > "$CODEX_CALLS"
+unset CODEX_MODE
+LEGACY_UNSAFE_JOB="say\"hi\"it's-a-legacy-job"
+LEGACY_DIR="$FREEZE_STATE_DIR/$LEGACY_UNSAFE_JOB"
+mkdir -p "$LEGACY_DIR"
+node -e '
+const fs = require("fs");
+const [resPath, job, cwd, session, handoff] = process.argv.slice(1);
+fs.writeFileSync(resPath, JSON.stringify({
+  job, cwd, session_id: session, handoff, mode: "resume", permission_mode: "bypassPermissions",
+  waker: "codex", status: "frozen", created_at: Date.now()
+}, null, 2));
+' "$LEGACY_DIR/reservation.json" "$LEGACY_UNSAFE_JOB" "$FAKE_CWD" "$SESSION" "$QUOTE_HANDOFF"
+CODEXWAKE="$HERE/../scripts/codex-wake.sh"
+LEGACY_RC=0
+bash "$CODEXWAKE" "$LEGACY_UNSAFE_JOB" > "$TMP/legacy-codexwake.log" 2>&1 || LEGACY_RC=$?
+[ "$LEGACY_RC" = 0 ] && ok "레거시(위험한 문자 섞인) job 이름도 codex 경로로 정상 완주" || fail "레거시 job 재개 실패 rc=$LEGACY_RC: $(cat "$TMP/legacy-codexwake.log")"
+RESUME_COUNT7=$(grep -c -- "--resume $SESSION" "$CALLS" || true)
+[ "$RESUME_COUNT7" = 1 ] && ok "재개 호출이 정확히 1번 — 명령 문자열이 깨져 여러 번 불리거나 실패하지 않았다" || fail "재개 호출 횟수=$RESUME_COUNT7 (기대 1)"
+grep -qF "$QUOTE_HANDOFF" "$CALLS" && ok "handoff 경로(따옴표·공백 포함)가 프롬프트에 그대로 전달됨" || fail "handoff 경로가 프롬프트에서 깨짐: $(cat "$CALLS" 2>/dev/null)"
+
+echo "-- 폴백(run_probe) 도중 취소되면 선무장된 NEXT_JOB 도 같이 취소된다 (MAJOR 2 회귀) --"
+: > "$CALLS"; : > "$CODEX_CALLS"
+export CODEX_MODE=cancel_during_fallback
+echo "# h" > "$HANDOFF"
+CODEXJOB8=codexcancelfallbackjob
+bash "$FZ" arm --cwd "$FAKE_CWD" --handoff "$HANDOFF" --job "$CODEXJOB8" --chain-left 1 --at +2s --session "$SESSION" --waker codex > /dev/null
+for i in $(seq 1 "$POLL_TRIES"); do
+  ST=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$FREEZE_STATE_DIR/$CODEXJOB8/reservation.json')).status)")
+  [ "$ST" = "cancelled" ] && break
+  sleep 1
+done
+[ "$ST" = "cancelled" ] && ok "폴백 진입 직후 취소 감지 — status=cancelled 로 조용히 종료" || fail "codexcancelfallbackjob status=$ST"
+CHILD8_STATUS=$(wait_child_cancelled "$FREEZE_STATE_DIR/${CODEXJOB8}-c0/reservation.json")
+[ "$CHILD8_STATUS" = "cancelled" ] && ok "run_probe() 의 취소 분기가 선무장된 다음 창도 같이 취소함(고아 방지)" || fail "다음 창이 고아로 남음: $CHILD8_STATUS"
+grep -q -- "--resume" "$CALLS" && fail "취소된 job 인데 재개가 호출됐다" || ok "취소 이후 재개가 호출되지 않음"
+
+echo "-- codex-wake.sh 는 codex exec 를 부르기 전에 취소 여부를 확인해, 이미 취소된 예약이면 codex 를 아예 안 부른다 (BLOCKER C item 2 회귀) --"
+: > "$CALLS"; : > "$CODEX_CALLS"
+unset CODEX_MODE
+CODEXWAKE="$HERE/../scripts/codex-wake.sh"
+PRECANCELJOB=codexwakeprecanceljob
+PRECANCELDIR="$FREEZE_STATE_DIR/$PRECANCELJOB"
+mkdir -p "$PRECANCELDIR"
+echo "# h" > "$HANDOFF"
+node -e "
+const fs=require('fs');
+fs.writeFileSync('$PRECANCELDIR/reservation.json', JSON.stringify({
+  job: '$PRECANCELJOB', cwd: '$FAKE_CWD', session_id: '$SESSION', handoff: '$HANDOFF',
+  mode: 'resume', permission_mode: 'bypassPermissions', waker: 'codex',
+  status: 'cancelled', created_at: Date.now()
+}, null, 2));"
+PRECANCEL_RC=0
+bash "$CODEXWAKE" "$PRECANCELJOB" > "$TMP/codexwake-precancel.log" 2>&1 || PRECANCEL_RC=$?
+[ "$PRECANCEL_RC" = 3 ] && ok "codex-wake.sh 가 취소 감지 전용 종료코드 3 으로 나감" || fail "종료코드=$PRECANCEL_RC (기대 3): $(cat "$TMP/codexwake-precancel.log")"
+[ ! -s "$CODEX_CALLS" ] && ok "codex(mock) 가 단 한 번도 호출되지 않음" || fail "codex 가 호출됨: $(cat "$CODEX_CALLS")"
+[ ! -s "$CALLS" ] && ok "claude(mock) 도 당연히 호출되지 않음" || fail "claude 가 호출됨: $(cat "$CALLS")"
+PRECANCEL_VERDICT=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$PRECANCELDIR/wake-verdict.json')).reason)")
+[ "$PRECANCEL_VERDICT" = "cancelled" ] && ok "verdict 의 reason 이 cancelled 로 남음" || fail "verdict reason 이상: $PRECANCEL_VERDICT"
+
+echo "-- do-resume.sh 는 claude 를 부르기 직전에도 취소 여부를 다시 확인한다 — codex 가 do-resume.sh 를 부르기 직전에 취소돼도 claude 는 호출되지 않는다 (BLOCKER C item 1 회귀) --"
+: > "$CALLS"; : > "$CODEX_CALLS"
+export CODEX_MODE=cancel_before_doresume
+echo "# h" > "$HANDOFF"
+CODEXJOB9=codexcanceldoresumejob
+bash "$FZ" arm --cwd "$FAKE_CWD" --handoff "$HANDOFF" --job "$CODEXJOB9" --chain-left 1 --at +2s --session "$SESSION" --waker codex > /dev/null
+for i in $(seq 1 "$POLL_TRIES"); do
+  ST=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$FREEZE_STATE_DIR/$CODEXJOB9/reservation.json')).status)")
+  [ "$ST" = "cancelled" ] && break
+  sleep 1
+done
+[ "$ST" = "cancelled" ] && ok "do-resume.sh 의 취소 검사로 status=cancelled 유지 — 폴백으로 다시 열리지 않음" || fail "codexcanceldoresumejob status=$ST"
+grep -q -- "--resume" "$CALLS" && fail "취소됐는데 claude 가 실제로 호출됐다(재개 강행 위험)" || ok "claude 가 전혀 호출되지 않음"
+DORESUME_VERDICT=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$FREEZE_STATE_DIR/$CODEXJOB9/wake-verdict.json')).reason)")
+[ "$DORESUME_VERDICT" = "cancelled" ] && ok "do-resume.sh 가 남긴 verdict 의 reason 이 cancelled" || fail "verdict reason 이상: $DORESUME_VERDICT"
+CHILD9_STATUS=$(wait_child_cancelled "$FREEZE_STATE_DIR/${CODEXJOB9}-c0/reservation.json")
+[ "$CHILD9_STATUS" = "cancelled" ] && ok "blocked:cancelled 경로도 선무장된 다음 창을 같이 취소함" || fail "다음 창이 취소되지 않음: $CHILD9_STATUS"
+unset CODEX_MODE
+
+echo "-- do-resume.sh 는 스스로 cwd 를 이동한다 (MINOR J 회귀) --"
+: > "$CALLS"
+PWD_CHECK_CLAUDE="$TMP/mock-claude-pwdcheck"
+PWD_CHECK_OUT="$TMP/pwdcheck.out"
+cat > "$PWD_CHECK_CLAUDE" <<EOF
+#!/usr/bin/env bash
+pwd > "$PWD_CHECK_OUT"
+echo "\$@" >> "$CALLS"
+exit 0
+EOF
+chmod +x "$PWD_CHECK_CLAUDE"
+PWDJOB=doresumecwdjob
+PWDDIR="$FREEZE_STATE_DIR/$PWDJOB"
+mkdir -p "$PWDDIR"
+echo "재개 프롬프트" > "$PWDDIR/wake-prompt.txt"
+node -e '
+const fs = require("fs");
+const [resPath, job, cwd, session] = process.argv.slice(1);
+fs.writeFileSync(resPath, JSON.stringify({
+  job, cwd, session_id: session, handoff: cwd + "/handoff.md",
+  mode: "resume", permission_mode: "bypassPermissions", waker: "codex", status: "frozen", created_at: Date.now()
+}, null, 2));
+' "$PWDDIR/reservation.json" "$PWDJOB" "$FAKE_CWD" "$SESSION"
+DORESUME="$HERE/../scripts/do-resume.sh"
+FREEZE_CLAUDE_BIN="$PWD_CHECK_CLAUDE" bash "$DORESUME" "$PWDJOB" > /dev/null 2>&1
+EXPECT_PWD="$(cd "$FAKE_CWD" && pwd)"
+[ "$(cat "$PWD_CHECK_OUT" 2>/dev/null)" = "$EXPECT_PWD" ] && ok "do-resume.sh 가 claude 를 부르기 전에 reservation 의 cwd 로 스스로 이동함" || fail "cwd 이동 실패: got=$(cat "$PWD_CHECK_OUT" 2>/dev/null) want=$EXPECT_PWD"
+
+echo "-- 여러 재개 시도의 출력 파일이 서로 안 겹친다 (MINOR K 회귀) --"
+: > "$CALLS"
+KJOB=minorkoutputjob
+KDIR="$FREEZE_STATE_DIR/$KJOB"
+mkdir -p "$KDIR"
+echo "재개 프롬프트" > "$KDIR/wake-prompt.txt"
+node -e '
+const fs = require("fs");
+const [resPath, job, cwd, session] = process.argv.slice(1);
+fs.writeFileSync(resPath, JSON.stringify({
+  job, cwd, session_id: session, handoff: cwd + "/handoff.md",
+  mode: "resume", permission_mode: "bypassPermissions", waker: "codex", status: "frozen", created_at: Date.now()
+}, null, 2));
+' "$KDIR/reservation.json" "$KJOB" "$FAKE_CWD" "$SESSION"
+FREEZE_CLAUDE_BIN="$MOCK" bash "$DORESUME" "$KJOB" > /dev/null 2>&1
+FREEZE_CLAUDE_BIN="$MOCK" bash "$DORESUME" "$KJOB" > /dev/null 2>&1
+OUTPUT_FILES=$(ls "$KDIR"/resume-output.*.txt 2>/dev/null | wc -l | tr -d ' ')
+[ "$OUTPUT_FILES" -ge 2 ] && ok "do-resume.sh 를 두 번 부르면 출력 파일도 두 개로 나뉨(서로 안 덮어씀)" || fail "출력 파일이 안 나뉨: 개수=$OUTPUT_FILES"
+[ -L "$KDIR/resume-output.txt" ] && ok "마지막 출력을 가리키는 포인터(심링크)가 남음" || fail "포인터 심링크 없음"
+
+echo "-- freeze.sh cancel 이 프로세스 그룹째 죽인다 — thaw(리더) 만 죽고 자식(codex 등)이 고아로 남는 사고를 막는다 (BLOCKER C item 3 회귀) --"
+# spawn_sleeper 와 같은 방식(node spawn detached:true = setsid)으로 그룹 리더를 하나
+# 띄우고, 그 리더가 자식 프로세스를 하나 더 낳는다 — thaw.sh(리더) → codex exec(자식)
+# 관계를 흉내낸다. 예전(kill "$pid")엔 리더만 죽고 자식은 살아남았다.
+GRPJOB=cancelgroupjob
+GRPDIR="$FREEZE_STATE_DIR/$GRPJOB"
+mkdir -p "$GRPDIR"
+node -e "
+const fs=require('fs');
+fs.writeFileSync('$GRPDIR/reservation.json', JSON.stringify({job:'$GRPJOB', status:'frozen'}, null, 2));"
+GRP_LEADER_SCRIPT="$TMP/grp-leader.sh"
+GRP_CHILD_PID_FILE="$TMP/grpchild.pid"
+cat > "$GRP_LEADER_SCRIPT" <<LEOF
+#!/usr/bin/env bash
+sleep 300 &
+echo \$! > "$GRP_CHILD_PID_FILE"
+wait
+LEOF
+chmod +x "$GRP_LEADER_SCRIPT"
+GRP_LEADER_PID=$(node -e '
+const { spawn } = require("child_process");
+const child = spawn("bash", [process.argv[1]], { detached: true, stdio: "ignore" });
+child.unref();
+console.log(child.pid);
+' "$GRP_LEADER_SCRIPT")
+echo "$GRP_LEADER_PID" > "$GRPDIR/sleeper.pid"
+for i in $(seq 1 "$POLL_TRIES"); do [ -f "$GRP_CHILD_PID_FILE" ] && break; sleep 0.2; done
+GRP_CHILD_PID=$(cat "$GRP_CHILD_PID_FILE" 2>/dev/null || true)
+dup_alive "$GRP_LEADER_PID" && dup_alive "$GRP_CHILD_PID" && ok "테스트용 리더·자식 프로세스가 둘 다 살아있음(전제 확인)" || fail "리더·자식 프로세스가 안 떠서 테스트 불가"
+bash "$FZ" cancel "$GRPJOB" > /dev/null
+for i in $(seq 1 "$POLL_TRIES"); do dup_alive "$GRP_LEADER_PID" || break; sleep 0.2; done
+dup_alive "$GRP_LEADER_PID" && fail "리더가 여전히 살아있음 (pid=$GRP_LEADER_PID)" || ok "리더(thaw 흉내)가 종료됨"
+dup_alive "$GRP_CHILD_PID" && fail "자식이 고아로 살아남음 (pid=$GRP_CHILD_PID) — 프로세스 그룹째 안 죽었다는 뜻" || ok "자식(codex 흉내)도 같이 종료됨 — 프로세스 그룹째 죽었음을 확인"
+
+echo "-- 이미 지난 데드라인이면 codex 폴백이 haiku 프로브를 한 번도 안 부르고 즉시 포기한다 (MAJOR H 회귀) --"
+# 실제 NEXT_AT 는 항상 RESUME_AT+5시간(최소 지금부터 약 4.9시간 뒤)이라 현실적인 테스트
+# 시간 안에서는 자연스러운 타이밍으로 "이미 지난 데드라인"을 재현할 수 없다 —
+# FREEZE_TEST_RETRY_DEADLINE 으로 강제 오버라이드한다(thaw.sh 주석 참고).
+: > "$CALLS"; : > "$CODEX_CALLS"
+export CODEX_MODE=crash
+export FREEZE_TEST_RETRY_DEADLINE=$(( $(date +%s) - 10 ))
+echo "# h" > "$HANDOFF"
+HJOB1=majorhpastdeadline
+bash "$FZ" arm --cwd "$FAKE_CWD" --handoff "$HANDOFF" --job "$HJOB1" --chain-left 1 --at +2s --session "$SESSION" --waker codex > /dev/null
+for i in $(seq 1 "$POLL_TRIES"); do
+  ST=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$FREEZE_STATE_DIR/$HJOB1/reservation.json')).status)")
+  [ "$ST" = "probe_failed" ] && break
+  sleep 1
+done
+[ "$ST" = "probe_failed" ] && ok "다음 창 시각을 이미 지났으면 프로브 없이 즉시 포기(probe_failed)" || fail "majorhpastdeadline status=$ST"
+grep -q -- "--model haiku" "$CALLS" && fail "이미 지난 데드라인인데 haiku 프로브가 호출됐다" || ok "프로브가 한 번도 호출되지 않음(예산 소진)"
+grep -q -- "--resume" "$CALLS" && fail "이미 지난 데드라인인데 재개가 호출됐다" || ok "재개도 호출되지 않음"
+unset FREEZE_TEST_RETRY_DEADLINE CODEX_MODE
+bash "$FZ" cancel "${HJOB1}-c0" > /dev/null 2>&1 || true
+
+echo "-- 남은 예산이 작으면 codex 폴백의 프로브 재시도 횟수가 설정된 PROBE_MAX 가 아니라 그 예산만큼만 돈다 (MAJOR H 회귀 — 동적 축소) --"
+: > "$CALLS"; : > "$CODEX_CALLS"
+export CODEX_MODE=crash
+export FREEZE_TEST_RETRY_DEADLINE=$(( $(date +%s) + 8 ))
+export FREEZE_PROBE_INTERVAL=1
+export FREEZE_PROBE_MAX=1000
+FAILPROBE_CLAUDE="$TMP/mock-claude-failprobe"
+cat > "$FAILPROBE_CLAUDE" <<EOF
+#!/usr/bin/env bash
+echo "\$@" >> "$CALLS"
+exit 1
+EOF
+chmod +x "$FAILPROBE_CLAUDE"
+echo "# h" > "$HANDOFF"
+HJOB2=majorhdynamiccap
+FREEZE_CLAUDE_BIN="$FAILPROBE_CLAUDE" bash "$FZ" arm --cwd "$FAKE_CWD" --handoff "$HANDOFF" --job "$HJOB2" --chain-left 1 --at +2s --session "$SESSION" --waker codex > /dev/null
+for i in $(seq 1 30); do
+  ST=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$FREEZE_STATE_DIR/$HJOB2/reservation.json')).status)")
+  [ "$ST" = "probe_failed" ] && break
+  sleep 1
+done
+# PROBE_MAX=1000·PROBE_INTERVAL=1 이 그대로 적용됐다면 이 30초 폴링 안에 절대 못
+# 끝난다(1000 번을 다 돌려면 1000 초 이상 걸린다) — 이 assertion 자체가 이미 동적
+# 축소가 실제로 일어났다는 강한 증거다.
+[ "$ST" = "probe_failed" ] && ok "예산 소진으로 짧은 시간 안에 포기(probe_failed) — PROBE_MAX=1000 이 그대로 적용됐다면 불가능했을 시간" || fail "majorhdynamiccap status=$ST (동적 축소가 안 됐다면 여전히 running 일 것)"
+HAIKU_ATTEMPTS=$(grep -c -- "--model haiku" "$CALLS" || true)
+[ "$HAIKU_ATTEMPTS" -ge 1 ] && [ "$HAIKU_ATTEMPTS" -le 15 ] && ok "프로브 시도 횟수가 설정된 PROBE_MAX(1000)가 아니라 남은 예산만큼만 돎: $HAIKU_ATTEMPTS 회" || fail "프로브 시도 횟수가 예산을 반영하지 않음: $HAIKU_ATTEMPTS 회(기대 1~15)"
+unset FREEZE_TEST_RETRY_DEADLINE CODEX_MODE FREEZE_PROBE_INTERVAL FREEZE_PROBE_MAX
+bash "$FZ" cancel "${HJOB2}-c0" > /dev/null 2>&1 || true
+
+section "freeze.sh cancel: next_job 체인을 따라 취소가 전파된다 (MAJOR 2 — 다단 체인)"
+CHAIN_A="$FREEZE_STATE_DIR/chainA"; CHAIN_B="$FREEZE_STATE_DIR/chainB"; CHAIN_C="$FREEZE_STATE_DIR/chainC"
+mkdir -p "$CHAIN_A" "$CHAIN_B" "$CHAIN_C"
+node -e "
+const fs=require('fs');
+fs.writeFileSync('$CHAIN_A/reservation.json', JSON.stringify({job:'chainA', status:'frozen', next_job:'chainB'}, null, 2));
+fs.writeFileSync('$CHAIN_B/reservation.json', JSON.stringify({job:'chainB', status:'frozen', next_job:'chainC'}, null, 2));
+fs.writeFileSync('$CHAIN_C/reservation.json', JSON.stringify({job:'chainC', status:'frozen'}, null, 2));
+"
+bash "$FZ" cancel chainA > /dev/null
+for j in chainA chainB chainC; do
+  ST=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$FREEZE_STATE_DIR/$j/reservation.json')).status)")
+  [ "$ST" = "cancelled" ] && ok "cmd_cancel 이 $j 까지 체인을 따라가 취소함" || fail "$j 가 취소되지 않음: $ST"
+done
+
+echo "-- codex 실행 파일 자체가 없으면 codex-wake 가 exit 2 하고 thaw 가 폴백한다 --"
+# codex 가 있는 디렉토리만 PATH 에서 걷어낸다(claude·node·date 등 다른 외부 명령까지
+# 필요해서 PATH 자체를 비우면 안 된다 — _claude.sh 테스트의 CSTRIPPED_PATH 와 같은 이유).
+CODEX_STRIPPED_PATH=$(printf '%s' "$PATH" | tr ':' '\n' | while IFS= read -r d; do [ -x "$d/codex" ] || printf '%s\n' "$d"; done | paste -sd: -)
+CODEX_NO_HOME="$TMP/codex-nohome"
+mkdir -p "$CODEX_NO_HOME"
+unset FREEZE_CODEX_BIN
+: > "$CALLS"
+echo "# h" > "$HANDOFF"
+CODEXJOB4=codexnobinjob
+HOME="$CODEX_NO_HOME" PATH="$CODEX_STRIPPED_PATH" bash "$FZ" arm --cwd "$FAKE_CWD" --handoff "$HANDOFF" \
+  --job "$CODEXJOB4" --chain-left 1 --at +2s --session "$SESSION" --waker codex > /dev/null
+for i in $(seq 1 40); do
+  ST=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$FREEZE_STATE_DIR/$CODEXJOB4/reservation.json')).status)")
+  [ "$ST" = "done" ] && break
+  sleep 1
+done
+[ "$ST" = "done" ] && ok "codex 실행 파일이 없어도 bash 폴백으로 완주" || fail "codexnobinjob status=$ST"
+grep -q -- "--resume $SESSION" "$CALLS" && ok "codex 실행 파일 부재 → 폴백 재개가 호출됨" || fail "폴백 재개 없음: $(cat "$CALLS" 2>/dev/null)"
+bash "$FZ" cancel "${CODEXJOB4}-c0" > /dev/null 2>&1 || true
+export FREEZE_CODEX_BIN="$MOCK_CODEX"   # 이후 테스트를 위해 복구
+
+echo "-- waker 필드가 없는 구버전 reservation 은 bash 로 동작한다 --"
+: > "$CALLS"
+echo "# h" > "$HANDOFF"
+LEGACYJOB=legacywakerjob
+# --session 을 명시로 준다 — 자동탐지(ls -t)에 맡기면 위의 codex 시나리오들이 프로브
+# 과정에서 $PROJ 에 남긴 흔적(있다면)까지 후보에 들어가 세션이 오염될 수 있다.
+bash "$FZ" reserve --at +1h --cwd "$FAKE_CWD" --handoff "$HANDOFF" --job "$LEGACYJOB" --session "$SESSION" > /dev/null
+LEGACY_PID=$(cat "$FREEZE_STATE_DIR/$LEGACYJOB/sleeper.pid")
+kill "$LEGACY_PID" 2>/dev/null || true
+for i in $(seq 1 "$POLL_TRIES"); do dup_alive "$LEGACY_PID" || break; sleep 0.2; done
+# reserve 는 이제 항상 waker 필드를 쓴다 — 필드 자체가 없던 예전 포맷을 재현하려면
+# 슬리퍼를 죽이고(레이스 방지) 지운 뒤 check 로 새로 깨운다(위 "check" 테스트와 같은 패턴).
+node -e "
+const fs=require('fs'), p='$FREEZE_STATE_DIR/$LEGACYJOB/reservation.json';
+const d=JSON.parse(fs.readFileSync(p)); delete d.waker; d.resume_at=0;
+fs.writeFileSync(p, JSON.stringify(d,null,2));"
+bash "$FZ" check > /dev/null
+for i in $(seq 1 "$POLL_TRIES"); do
+  ST=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$FREEZE_STATE_DIR/$LEGACYJOB/reservation.json')).status)")
+  [ "$ST" = "done" ] && break
+  sleep 1
+done
+[ "$ST" = "done" ] && ok "waker 필드 없는 구버전 예약도 완주" || fail "legacywakerjob status=$ST"
+grep -q -- "--model haiku" "$CALLS" && ok "구버전 예약(waker 필드 없음)은 bash 프로브 경로로 동작" || fail "구버전 예약이 프로브를 안 부름: $(cat "$CALLS" 2>/dev/null)"
+grep -q -- "--resume $SESSION" "$CALLS" && ok "구버전 예약이 정상 재개됨" || fail "구버전 재개 없음: $(cat "$CALLS" 2>/dev/null)"
+
+unset CODEX_MODE FREEZE_CODEX_BIN CODEX_CALLS_FILE
+
 
 section "_node.sh: node 탐색 폴백"
 
