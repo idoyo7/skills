@@ -16,6 +16,40 @@
 11. deny 사유에 --at HH:MM 대안과 FREEZE_HOOK_OFF 킬스위치 안내가 들어있다
 12. deny 사유 4)에 완료 신호(freeze.sh done --handoff) 안내가 있고, 그 handoff
     경로가 2)의 --handoff 경로와 동일하다 (안 맞으면 예약을 못 해제한다)
+
+TestScaleGate — 서브에이전트 규모 게이트(S3):
+13. 추정 서브에이전트 수가 임계값 이하면 통과하고 세션 마커도 남기지 않는다
+14. 임계값을 넘으면 막는다(사유에 추정 개수가 들어간다)
+15. 팬아웃 대상(map/parallel/pipeline 리시버·인자)을 정적으로 못 세면 막는다
+16. scriptPath로 준 파일을 읽어 판정하고, 파일이 없으면 통과한다
+17. FREEZE_HOOK_AGENT_THRESHOLD로 임계값을 바꿀 수 있다
+18. parallel/pipeline은 표준 API라 팬아웃 대상(인라인 배열 리터럴, const/let/var 배열
+    식별자)의 크기를 셀 수 있으면 그 크기로만 추정하고, 작으면 통과한다
+19. 속성 접근·함수 호출 결과 위의 팬아웃은 크기를 알 수 없어 막는다
+20. 배열 원소 수는 중첩 배열/객체·문자열 안 콤마에 흔들리지 않고 깊이 인식으로 정확히
+    센다
+21. for/for await/while 루프는 무조건 막는다
+22. 팬아웃이 중첩되면(팬아웃 안에 또 팬아웃) 곱으로 누적한다(10×10 → 100)
+23. parallel(X.map(...)) 같은 pass-through는 곱하지 않고 안쪽 크기 그대로 쓴다
+24. 배열 리터럴 안 spread(`...items`, `...Array(100)`)는 크기를 셀 수 없는 것으로 막는다
+25. 주석·문자열 리터럴 안의 for(/.map( 패턴은 지우고 판정해 오탐하지 않는다
+26. 정규식 리터럴 안의 따옴표(`/['"]/ `, `/don't/`)를 문자열 여는 따옴표로 오인해
+    뒤따르는 팬아웃을 통째로 지우면 안 된다(BLOCKER D)
+27. 정규식 리터럴 안의 `//`(`/\\/\\//`)를 줄 주석으로 오인해 같은 줄의 팬아웃을
+    지우면 안 된다
+28. 괄호 짝이 안 맞는 정규식 리터럴(`/[({]/`)이 괄호 깊이 계산을 어긋나게 하면
+    안 된다
+29. 나눗셈(`total / count`)을 정규식 리터럴로 오인해 지우면 안 된다
+30. 정규식 리터럴 안의 `agent(` 문자열은 실제 호출로 세면 안 된다
+31. `Array.from(`/`new Array(`/`.fill(`/`.reduce(`/`Promise.all(`/`Promise.allSettled(`
+    은 이 파일이 아는 팬아웃 마커 다섯 개(parallel/pipeline/.map/.forEach/.flatMap)
+    밖이므로 무조건 셀 수 없음으로 막는다
+32. point-free(`specs.map(agent)`처럼 agent 를 함수 참조로만 넘기는 형태)는
+    `agent(` 호출 형태로 안 잡히므로 무조건 셀 수 없음으로 막는다
+33. 배열 이름이 두 번 이상 선언되거나(다른 스코프의 동명 변수 포함), 선언 뒤
+    재대입되거나 push/concat/splice/unshift 로 변형되면 선언 시점 크기를 못
+    믿으므로 셀 수 없음으로 막는다 — 재선언·재대입·변형이 없는 배열은 여전히
+    통과한다
 """
 import importlib.util
 import io
@@ -144,7 +178,7 @@ class TestWorkflowArm(unittest.TestCase):
             "session_id": "s1",
             "cwd": "/repo",
             "tool_name": "Workflow",
-            "tool_input": {"script": "console.log(1)", "name": "big-job"},
+            "tool_input": {"script": "items.forEach(x => agent(x));", "name": "big-job"},
         }
         stdout, stderr, code = _run(payload)
         self.assertEqual(code, 0)
@@ -156,7 +190,7 @@ class TestWorkflowArm(unittest.TestCase):
             "session_id": "s1",
             "cwd": "/repo",
             "tool_name": "Workflow",
-            "tool_input": {"name": "big-job"},
+            "tool_input": {"name": "big-job", "script": "items.forEach(x => agent(x));"},
         }
         stdout, stderr, code = _run(payload)
         self.assertEqual(code, 0)
@@ -173,7 +207,7 @@ class TestWorkflowArm(unittest.TestCase):
             "session_id": "s1",
             "cwd": "/repo",
             "tool_name": "Workflow",
-            "tool_input": {"name": "big-job"},
+            "tool_input": {"name": "big-job", "script": "items.forEach(x => agent(x));"},
         }
         stdout, stderr, code = _run(payload)
         self.assertEqual(code, 0)
@@ -198,7 +232,7 @@ class TestWorkflowArm(unittest.TestCase):
             "session_id": "s1",
             "cwd": "/repo",
             "tool_name": "Workflow",
-            "tool_input": {"name": "big-job"},
+            "tool_input": {"name": "big-job", "script": "items.forEach(x => agent(x));"},
         }
         stdout, stderr, code = _run(payload)
         self.assertEqual(code, 0)
@@ -221,7 +255,7 @@ class TestWorkflowArm(unittest.TestCase):
             "session_id": "s1",
             "cwd": "/repo",
             "tool_name": "Workflow",
-            "tool_input": {"name": "big-job"},
+            "tool_input": {"name": "big-job", "script": "items.forEach(x => agent(x));"},
         }
         stdout, stderr, code = _run(payload)
         self.assertEqual(code, 0)
@@ -233,7 +267,7 @@ class TestWorkflowArm(unittest.TestCase):
             "session_id": "s1",
             "cwd": "/repo",
             "tool_name": "Workflow",
-            "tool_input": {"name": "big-job"},
+            "tool_input": {"name": "big-job", "script": "items.forEach(x => agent(x));"},
         }
         stdout, stderr, code = _run(payload)
         self.assertEqual(code, 0)
@@ -248,7 +282,7 @@ class TestWorkflowArm(unittest.TestCase):
             "session_id": "s1",
             "cwd": "/repo",
             "tool_name": "Workflow",
-            "tool_input": {"name": "big-job"},
+            "tool_input": {"name": "big-job", "script": "items.forEach(x => agent(x));"},
         }
         stdout, stderr, code = _run(payload)
         data = json.loads(stdout.strip())
@@ -262,7 +296,7 @@ class TestWorkflowArm(unittest.TestCase):
             "session_id": "s1",
             "cwd": "/repo",
             "tool_name": "Workflow",
-            "tool_input": {"scriptPath": "/tmp/x.js"},
+            "tool_input": {"script": "items.forEach(x => agent(x));"},
         }
         stdout, stderr, code = _run(payload)
         self.assertEqual(code, 0)
@@ -280,7 +314,7 @@ class TestWorkflowArm(unittest.TestCase):
             "session_id": "s1",
             "cwd": "/repo",
             "tool_name": "Workflow",
-            "tool_input": {"name": "big-job"},
+            "tool_input": {"name": "big-job", "script": "items.forEach(x => agent(x));"},
         }
         stdout1, _, code1 = _run(payload)
         data1 = json.loads(stdout1.strip())
@@ -306,7 +340,7 @@ class TestWorkflowArm(unittest.TestCase):
                 "session_id": "s1",
                 "cwd": "/repo",
                 "tool_name": "Workflow",
-                "tool_input": {"name": "big-job"},
+                "tool_input": {"name": "big-job", "script": "items.forEach(x => agent(x));"},
             }
             stdout, stderr, code = _run(payload)
         self.assertEqual(code, 0)
@@ -332,7 +366,7 @@ class TestWorkflowArm(unittest.TestCase):
                     "session_id": "s1",
                     "cwd": "/repo",
                     "tool_name": "Workflow",
-                    "tool_input": {"name": "big-job"},
+                    "tool_input": {"name": "big-job", "script": "items.forEach(x => agent(x));"},
                 }
                 stdout, stderr, code = _run(payload)
             self.assertEqual(code, 0)
@@ -398,7 +432,7 @@ class TestWorkflowArm(unittest.TestCase):
                 "session_id": "s1",
                 "cwd": "/repo",
                 "tool_name": "Workflow",
-                "tool_input": {"name": "big-job"},
+                "tool_input": {"name": "big-job", "script": "items.forEach(x => agent(x));"},
             }
             stdout, stderr, code = _run(payload)
             self.assertEqual(code, 0)
@@ -430,7 +464,7 @@ class TestWorkflowArm(unittest.TestCase):
             "session_id": "s1",
             "cwd": "/repo",
             "tool_name": "Workflow",
-            "tool_input": {"name": "big-job"},
+            "tool_input": {"name": "big-job", "script": "items.forEach(x => agent(x));"},
         }
         stdout1, _, code1 = _run(payload)
         data1 = json.loads(stdout1.strip())
@@ -469,7 +503,7 @@ class TestWorkflowArm(unittest.TestCase):
             "session_id": "s-new",
             "cwd": "/repo",
             "tool_name": "Workflow",
-            "tool_input": {"name": "big-job"},
+            "tool_input": {"name": "big-job", "script": "items.forEach(x => agent(x));"},
         }
         stdout, _, code = _run(payload)
         reason = json.loads(stdout.strip())["hookSpecificOutput"]["permissionDecisionReason"]
@@ -599,6 +633,646 @@ class TestWorkflowArm(unittest.TestCase):
                             )
                     except Exception:
                         pass
+
+
+class TestScaleGate(unittest.TestCase):
+    """S3: 서브에이전트 규모 게이트.
+
+    작은 워크플로우(추정 서브에이전트 수가 임계값 이하)는 예약 여부와 무관하게 통과하고
+    세션 마커도 남기지 않는다. 규모가 크거나(임계값 초과) 팬아웃이 있어 정적으로 셀 수
+    없으면 기존 예약/세션 마커 로직을 그대로 탄다.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.state_root = Path(self._tmp.name)
+        self._env_patch = patch.dict(
+            os.environ,
+            {"FREEZE_STATE_DIR": str(self.state_root)},
+            clear=False,
+        )
+        self._env_patch.start()
+        os.environ.pop("DISABLE_OMC", None)
+        os.environ.pop("FREEZE_HOOK_OFF", None)
+        os.environ.pop("FREEZE_HOOK_AGENT_THRESHOLD", None)
+
+    def tearDown(self):
+        self._env_patch.stop()
+        self._tmp.cleanup()
+
+    def test_small_workflow_passes_without_session_marker(self):
+        payload = {
+            "session_id": "s1",
+            "cwd": "/repo",
+            "tool_name": "Workflow",
+            "tool_input": {"script": "agent(1); agent(2); agent(3);"},
+        }
+        stdout, stderr, code = _run(payload)
+        self.assertEqual(code, 0)
+        self.assertEqual(stdout.strip(), "")
+        marker = self.state_root / "workflow-arm-sessions" / "s1"
+        self.assertFalse(marker.exists(), "작은 워크플로우는 세션 마커를 남기면 안 된다")
+
+    def test_over_threshold_agent_count_denies(self):
+        script = "\n".join(f"agent({i});" for i in range(12))
+        payload = {
+            "session_id": "s1",
+            "cwd": "/repo",
+            "tool_name": "Workflow",
+            "tool_input": {"script": script},
+        }
+        stdout, stderr, code = _run(payload)
+        self.assertEqual(code, 0)
+        data = json.loads(stdout.strip())
+        reason = data["hookSpecificOutput"]["permissionDecisionReason"]
+        self.assertEqual(data["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn("12개로 추정된다", reason)
+
+    def test_fanout_with_few_agent_calls_still_denies(self):
+        payload = {
+            "session_id": "s1",
+            "cwd": "/repo",
+            "tool_name": "Workflow",
+            "tool_input": {"script": "items.map(x => agent(x)); agent(0);"},
+        }
+        stdout, stderr, code = _run(payload)
+        data = json.loads(stdout.strip())
+        reason = data["hookSpecificOutput"]["permissionDecisionReason"]
+        self.assertEqual(data["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn("정적으로 셀 수 없다", reason)
+
+    # ── parallel/pipeline은 표준 API라 팬아웃 대상을 셀 수 있으면 그 크기로만 추정한다 ──
+    def test_countable_named_array_fanout_passes_when_small(self):
+        script = (
+            "const DIMENSIONS = [{axis: 'a'}, {axis: 'b'}];\n"
+            "pipeline(DIMENSIONS, d => agent(d));\n"
+        )
+        payload = {
+            "session_id": "s1",
+            "cwd": "/repo",
+            "tool_name": "Workflow",
+            "tool_input": {"script": script},
+        }
+        stdout, stderr, code = _run(payload)
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            stdout.strip(), "", "정적으로 셀 수 있는 배열 위의 pipeline은 작으면 통과해야 한다"
+        )
+
+    def test_countable_named_array_fanout_denies_when_large(self):
+        items = ", ".join(f"{{axis: '{i}'}}" for i in range(12))
+        script = f"const DIMENSIONS = [{items}];\npipeline(DIMENSIONS, d => agent(d));\n"
+        payload = {
+            "session_id": "s1",
+            "cwd": "/repo",
+            "tool_name": "Workflow",
+            "tool_input": {"script": script},
+        }
+        stdout, stderr, code = _run(payload)
+        data = json.loads(stdout.strip())
+        self.assertEqual(data["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn("12개로 추정된다", data["hookSpecificOutput"]["permissionDecisionReason"])
+
+    def test_property_access_receiver_denies_as_uncountable(self):
+        payload = {
+            "session_id": "s1",
+            "cwd": "/repo",
+            "tool_name": "Workflow",
+            "tool_input": {"script": "parallel(review.findings.map(f => agent(f)));"},
+        }
+        stdout, stderr, code = _run(payload)
+        data = json.loads(stdout.strip())
+        self.assertEqual(data["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn(
+            "정적으로 셀 수 없다", data["hookSpecificOutput"]["permissionDecisionReason"]
+        )
+
+    def test_inline_array_literal_fanout_is_counted(self):
+        payload = {
+            "session_id": "s1",
+            "cwd": "/repo",
+            "tool_name": "Workflow",
+            "tool_input": {"script": "parallel([1, 2, 3].map(x => agent(x)));"},
+        }
+        stdout, stderr, code = _run(payload)
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            stdout.strip(), "", "인라인 배열 리터럴 위의 팬아웃은 그 크기로 셀 수 있어야 한다"
+        )
+
+    def test_nested_array_element_count_is_depth_aware(self):
+        script = "const PAIRS = [[1, 2], [3, 4]];\npipeline(PAIRS, p => agent(p));\n"
+        payload = {
+            "session_id": "s1",
+            "cwd": "/repo",
+            "tool_name": "Workflow",
+            "tool_input": {"script": script},
+        }
+        stdout, stderr, code = _run(payload)
+        # PAIRS는 원소 2개(agent 1개 × 2 = 2, 임계값 10 이하) → 통과
+        self.assertEqual(code, 0)
+        self.assertEqual(stdout.strip(), "")
+
+    def test_object_array_element_count_is_depth_aware(self):
+        script = "const ONE = [{a: 1, b: 2}];\npipeline(ONE, o => agent(o));\n"
+        payload = {
+            "session_id": "s1",
+            "cwd": "/repo",
+            "tool_name": "Workflow",
+            "tool_input": {"script": script},
+        }
+        stdout, stderr, code = _run(payload)
+        # ONE은 원소 1개(콤마가 객체 내부에 있어도 최상위 원소는 하나) → 통과
+        self.assertEqual(code, 0)
+        self.assertEqual(stdout.strip(), "")
+
+    def test_comma_inside_string_does_not_inflate_element_count(self):
+        script = 'const LABELS = ["a,b", "c"];\npipeline(LABELS, l => agent(l));\n'
+        payload = {
+            "session_id": "s1",
+            "cwd": "/repo",
+            "tool_name": "Workflow",
+            "tool_input": {"script": script},
+        }
+        stdout, stderr, code = _run(payload)
+        # 문자열 안 콤마를 원소 구분자로 잘못 세면 3개(임계값 이하라 어차피 통과하긴
+        # 하지만) — 정확히 2개로 세는지는 임계값을 1로 낮춰 확인한다.
+        self.assertEqual(code, 0)
+        self.assertEqual(stdout.strip(), "")
+        with patch.dict(os.environ, {"FREEZE_HOOK_AGENT_THRESHOLD": "1"}):
+            payload2 = dict(payload, session_id="s2")
+            stdout2, _, code2 = _run(payload2)
+            data2 = json.loads(stdout2.strip())
+            self.assertEqual(data2["hookSpecificOutput"]["permissionDecision"], "deny")
+            self.assertIn(
+                "2개로 추정된다", data2["hookSpecificOutput"]["permissionDecisionReason"]
+            )
+
+    def test_for_loop_denies_as_uncountable(self):
+        payload = {
+            "session_id": "s1",
+            "cwd": "/repo",
+            "tool_name": "Workflow",
+            "tool_input": {"script": "for (const x of items) { agent(x); }"},
+        }
+        stdout, stderr, code = _run(payload)
+        data = json.loads(stdout.strip())
+        self.assertEqual(data["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn(
+            "정적으로 셀 수 없다", data["hookSpecificOutput"]["permissionDecisionReason"]
+        )
+
+    def test_each_fanout_signal_is_detected(self):
+        signals = [
+            "items.map(x => agent(x))",
+            "parallel(() => agent(1))",
+            "pipeline(() => agent(1))",
+            "for (const x of items) { agent(x); }",
+            "items.forEach(x => agent(x))",
+        ]
+        for i, script in enumerate(signals):
+            with self.subTest(script=script):
+                payload = {
+                    "session_id": f"sig{i}",
+                    "cwd": "/repo",
+                    "tool_name": "Workflow",
+                    "tool_input": {"script": script},
+                }
+                stdout, _, code = _run(payload)
+                data = json.loads(stdout.strip())
+                self.assertEqual(
+                    data["hookSpecificOutput"]["permissionDecision"], "deny"
+                )
+
+    def test_script_path_file_is_read_and_judged(self):
+        with tempfile.TemporaryDirectory() as td:
+            script_path = Path(td) / "wf.js"
+            script_path.write_text(
+                "\n".join(f"agent({i});" for i in range(12)), encoding="utf-8"
+            )
+            payload = {
+                "session_id": "s1",
+                "cwd": "/repo",
+                "tool_name": "Workflow",
+                "tool_input": {"scriptPath": str(script_path)},
+            }
+            stdout, _, code = _run(payload)
+            data = json.loads(stdout.strip())
+            self.assertEqual(
+                data["hookSpecificOutput"]["permissionDecision"], "deny"
+            )
+
+    def test_missing_script_path_passes(self):
+        payload = {
+            "session_id": "s1",
+            "cwd": "/repo",
+            "tool_name": "Workflow",
+            "tool_input": {"scriptPath": "/no/such/file-xyz.js"},
+        }
+        stdout, stderr, code = _run(payload)
+        self.assertEqual(code, 0)
+        self.assertEqual(stdout.strip(), "")
+
+    def test_threshold_env_override_changes_verdict(self):
+        with patch.dict(os.environ, {"FREEZE_HOOK_AGENT_THRESHOLD": "2"}):
+            payload = {
+                "session_id": "s1",
+                "cwd": "/repo",
+                "tool_name": "Workflow",
+                "tool_input": {"script": "agent(1); agent(2); agent(3);"},
+            }
+            stdout, _, code = _run(payload)
+            data = json.loads(stdout.strip())
+            reason = data["hookSpecificOutput"]["permissionDecisionReason"]
+            self.assertEqual(data["hookSpecificOutput"]["permissionDecision"], "deny")
+            self.assertIn("임계값 2", reason)
+
+    # ── Codex 리뷰 BLOCKER: 중첩 팬아웃은 곱해야 한다(max로 접으면 과소평가) ──────
+    def test_nested_fanout_multiplies_instead_of_max(self):
+        outer = "[" + ",".join(f"{{n:{i}}}" for i in range(10)) + "]"
+        inner = "[" + ",".join(f"{{n:{i}}}" for i in range(10)) + "]"
+        script = (
+            f"const OUTER = {outer};\n"
+            f"const INNER = {inner};\n"
+            "pipeline(OUTER, o => {\n"
+            "  pipeline(INNER, i => agent(i));\n"
+            "});\n"
+        )
+        payload = {
+            "session_id": "s1",
+            "cwd": "/repo",
+            "tool_name": "Workflow",
+            "tool_input": {"script": script},
+        }
+        stdout, stderr, code = _run(payload)
+        data = json.loads(stdout.strip())
+        self.assertEqual(data["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn(
+            "100개로 추정된다",
+            data["hookSpecificOutput"]["permissionDecisionReason"],
+            "10×10 중첩 팬아웃을 max()로 접으면 10이 되어 큰 워크플로우를 통과시킨다 — "
+            "곱해서 100이어야 한다",
+        )
+
+    def test_passthrough_call_uses_inner_size_not_multiplied(self):
+        # parallel(X.map(...))는 X 크기 그대로여야 한다(곱하면 3이 아니라 9가 됨).
+        small = {
+            "session_id": "s1",
+            "cwd": "/repo",
+            "tool_name": "Workflow",
+            "tool_input": {
+                "script": "const X = [1, 2, 3]; parallel(X.map(v => agent(v)));"
+            },
+        }
+        stdout, stderr, code = _run(small)
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            stdout.strip(), "", "pass-through는 X 크기(3)만 반영해야 하므로 통과해야 한다"
+        )
+
+        twelve = "[" + ",".join(str(i) for i in range(12)) + "]"
+        large = {
+            "session_id": "s2",
+            "cwd": "/repo",
+            "tool_name": "Workflow",
+            "tool_input": {
+                "script": f"const X = {twelve}; parallel(X.map(v => agent(v)));"
+            },
+        }
+        stdout2, _, _ = _run(large)
+        data2 = json.loads(stdout2.strip())
+        self.assertEqual(data2["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn(
+            "12개로 추정된다",
+            data2["hookSpecificOutput"]["permissionDecisionReason"],
+            "pass-through가 곱해지면 12가 아니라 144가 나와야 정상인데, 곱하지 않아야 "
+            "하므로 X 크기 그대로 12여야 한다",
+        )
+
+    # ── Codex 리뷰 BLOCKER: spread는 배열 크기를 셀 수 없는 것으로 다뤄야 한다 ──
+    def test_spread_array_literal_is_uncountable(self):
+        for script in (
+            "const BIG = [...Array(100)]; pipeline(BIG, x => agent(x));",
+            "const BIG = [...items]; pipeline(BIG, x => agent(x));",
+        ):
+            with self.subTest(script=script):
+                payload = {
+                    "session_id": f"s-{hash(script)}",
+                    "cwd": "/repo",
+                    "tool_name": "Workflow",
+                    "tool_input": {"script": script},
+                }
+                stdout, _, code = _run(payload)
+                data = json.loads(stdout.strip())
+                self.assertEqual(
+                    data["hookSpecificOutput"]["permissionDecision"], "deny"
+                )
+                self.assertIn(
+                    "정적으로 셀 수 없다",
+                    data["hookSpecificOutput"]["permissionDecisionReason"],
+                )
+
+    # ── Codex 리뷰 MINOR: 주석·문자열 속 패턴에 낚이면 안 된다 ────────────────
+    def test_loop_inside_comment_does_not_trigger_deny(self):
+        payload = {
+            "session_id": "s1",
+            "cwd": "/repo",
+            "tool_name": "Workflow",
+            "tool_input": {
+                "script": "// for (const x of huge) { agent(x); }\nagent(1); agent(2);"
+            },
+        }
+        stdout, stderr, code = _run(payload)
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            stdout.strip(), "", "주석 안의 for (는 실제 팬아웃이 아니므로 막으면 안 된다"
+        )
+
+    def test_map_inside_string_literal_does_not_trigger_deny(self):
+        payload = {
+            "session_id": "s1",
+            "cwd": "/repo",
+            "tool_name": "Workflow",
+            "tool_input": {
+                "script": (
+                    'const doc = "call items.map(x => agent(x)) here";\n'
+                    "agent(1); agent(2);"
+                )
+            },
+        }
+        stdout, stderr, code = _run(payload)
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            stdout.strip(),
+            "",
+            "문자열 리터럴 안의 .map(는 실제 팬아웃이 아니므로 막으면 안 된다",
+        )
+
+    # ── BLOCKER D: 정규식 리터럴을 모르면 스트리퍼가 파일 나머지를 통째로 지운다 ──
+    def test_regex_with_quote_class_before_fanout_still_denies(self):
+        items = "[" + ",".join(str(i) for i in range(20)) + "]"
+        script = (
+            "const isQuoted = (s) => /['\"]/.test(s);\n"
+            f"const ITEMS = {items};\n"
+            "parallel(ITEMS.map(x => agent(x)));\n"
+        )
+        payload = {
+            "session_id": "s1",
+            "cwd": "/repo",
+            "tool_name": "Workflow",
+            "tool_input": {"script": script},
+        }
+        stdout, stderr, code = _run(payload)
+        data = json.loads(stdout.strip())
+        self.assertEqual(data["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn(
+            "20개로 추정된다",
+            data["hookSpecificOutput"]["permissionDecisionReason"],
+            "정규식 안의 따옴표를 문자열 여는 따옴표로 오인하면 뒤의 팬아웃이 통째로 "
+            "지워져 0개로 통과해버린다",
+        )
+
+    def test_regex_with_apostrophe_before_fanout_still_denies(self):
+        items = "[" + ",".join(str(i) for i in range(20)) + "]"
+        script = (
+            "const re = /don't/;\n"
+            f"const ITEMS = {items};\n"
+            "parallel(ITEMS.map(x => agent(x)));\n"
+        )
+        payload = {
+            "session_id": "s1",
+            "cwd": "/repo",
+            "tool_name": "Workflow",
+            "tool_input": {"script": script},
+        }
+        stdout, stderr, code = _run(payload)
+        data = json.loads(stdout.strip())
+        self.assertEqual(data["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn(
+            "20개로 추정된다", data["hookSpecificOutput"]["permissionDecisionReason"]
+        )
+
+    def test_regex_containing_double_slash_same_line_as_fanout_still_denies(self):
+        items = "[" + ",".join(str(i) for i in range(20)) + "]"
+        script = (
+            r"const parts = url.split(/\/\//); "
+            f"const ITEMS = {items}; "
+            "parallel(ITEMS.map(x => agent(x)));\n"
+        )
+        payload = {
+            "session_id": "s1",
+            "cwd": "/repo",
+            "tool_name": "Workflow",
+            "tool_input": {"script": script},
+        }
+        stdout, stderr, code = _run(payload)
+        data = json.loads(stdout.strip())
+        self.assertEqual(data["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn(
+            "20개로 추정된다",
+            data["hookSpecificOutput"]["permissionDecisionReason"],
+            "정규식 안의 // 를 줄 주석으로 오인하면 같은 줄에 이어지는 팬아웃까지 "
+            "함께 지워진다",
+        )
+
+    def test_unbalanced_bracket_regex_does_not_break_paren_depth(self):
+        items = "[" + ",".join(str(i) for i in range(20)) + "]"
+        script = (
+            "const re = /[({]/;\n"
+            f"const ITEMS = {items};\n"
+            "parallel(ITEMS.map(x => agent(x)));\n"
+        )
+        payload = {
+            "session_id": "s1",
+            "cwd": "/repo",
+            "tool_name": "Workflow",
+            "tool_input": {"script": script},
+        }
+        stdout, stderr, code = _run(payload)
+        data = json.loads(stdout.strip())
+        self.assertEqual(data["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn(
+            "20개로 추정된다", data["hookSpecificOutput"]["permissionDecisionReason"]
+        )
+
+    def test_division_is_not_mistaken_for_regex(self):
+        script = "const rate = total / count;\nagent(1); agent(2);"
+        clean = _mod._strip_comments_and_strings(script)
+        self.assertIn(
+            "total / count", clean, "나눗셈 / 는 정규식으로 오인해 지우면 안 된다"
+        )
+        payload = {
+            "session_id": "s1",
+            "cwd": "/repo",
+            "tool_name": "Workflow",
+            "tool_input": {"script": script},
+        }
+        stdout, stderr, code = _run(payload)
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            stdout.strip(), "", "나눗셈만 있는 작은 스크립트는 통과해야 한다"
+        )
+
+    def test_agent_call_inside_regex_literal_is_not_counted(self):
+        script = r"const re = /agent\(agent\(agent\(/;" + "\nagent(1); agent(2);"
+        clean = _mod._strip_comments_and_strings(script)
+        self.assertEqual(
+            len(_mod._AGENT_CALL_RE.findall(clean)),
+            2,
+            "정규식 리터럴 안의 agent( 문자열은 실제 호출로 세면 안 된다",
+        )
+
+    # ── MAJOR E: 팬아웃 마커 다섯 개 밖(Array.from/reduce/Promise.all/point-free) ──
+    def test_array_from_and_promise_all_denies_as_uncountable(self):
+        payload = {
+            "session_id": "s1",
+            "cwd": "/repo",
+            "tool_name": "Workflow",
+            "tool_input": {
+                "script": (
+                    "const results = await Promise.all(\n"
+                    "  Array.from({length: 50}, (_, i) => agent({prompt: i}))\n"
+                    ");\n"
+                )
+            },
+        }
+        stdout, stderr, code = _run(payload)
+        data = json.loads(stdout.strip())
+        self.assertEqual(data["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn(
+            "정적으로 셀 수 없다",
+            data["hookSpecificOutput"]["permissionDecisionReason"],
+            "Array.from/Promise.all 은 이 파일이 아는 팬아웃 마커 다섯 개 밖이라 "
+            "실제 50개짜리가 배수 1·통과로 새어나가면 안 된다",
+        )
+
+    def test_point_free_agent_reference_denies_as_uncountable(self):
+        payload = {
+            "session_id": "s1",
+            "cwd": "/repo",
+            "tool_name": "Workflow",
+            "tool_input": {"script": "parallel(specs.map(agent));"},
+        }
+        stdout, stderr, code = _run(payload)
+        data = json.loads(stdout.strip())
+        self.assertEqual(data["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn(
+            "정적으로 셀 수 없다",
+            data["hookSpecificOutput"]["permissionDecisionReason"],
+            "point-free(agent 를 함수 참조로만 넘김)라 agent( 호출 형태가 안 걸려 "
+            "0개로 통과하면 안 된다",
+        )
+
+    def test_reduce_accumulator_denies_as_uncountable(self):
+        payload = {
+            "session_id": "s1",
+            "cwd": "/repo",
+            "tool_name": "Workflow",
+            "tool_input": {
+                "script": (
+                    "items.reduce(async (acc, x) => "
+                    "[...(await acc), await agent(x)], []);"
+                )
+            },
+        }
+        stdout, stderr, code = _run(payload)
+        data = json.loads(stdout.strip())
+        self.assertEqual(data["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn(
+            "정적으로 셀 수 없다",
+            data["hookSpecificOutput"]["permissionDecisionReason"],
+            ".reduce( 누산기 형태는 이 파일이 아는 팬아웃 마커가 아니므로 반복 "
+            "횟수를 못 세면 무조건 막아야 한다",
+        )
+
+    # ── MAJOR F: 배열 크기를 선언 시점 값으로만 믿으면 안 된다 ──────────────────
+    def test_reassigned_named_array_denies_as_uncountable(self):
+        payload = {
+            "session_id": "s1",
+            "cwd": "/repo",
+            "tool_name": "Workflow",
+            "tool_input": {
+                "script": (
+                    "let tasks = [1, 2];\n"
+                    "tasks = await buildHundredTasks();\n"
+                    "parallel(tasks.map(x => agent(x)));\n"
+                )
+            },
+        }
+        stdout, stderr, code = _run(payload)
+        data = json.loads(stdout.strip())
+        self.assertEqual(data["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn(
+            "정적으로 셀 수 없다",
+            data["hookSpecificOutput"]["permissionDecisionReason"],
+            "선언 뒤 재대입된 배열은 선언 시점 크기(2)를 더 이상 못 믿는다",
+        )
+
+    def test_mutated_named_array_denies_as_uncountable(self):
+        payload = {
+            "session_id": "s1",
+            "cwd": "/repo",
+            "tool_name": "Workflow",
+            "tool_input": {
+                "script": (
+                    "const tasks = [1, 2];\n"
+                    "tasks.push(3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16);\n"
+                    "parallel(tasks.map(x => agent(x)));\n"
+                )
+            },
+        }
+        stdout, stderr, code = _run(payload)
+        data = json.loads(stdout.strip())
+        self.assertEqual(data["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn(
+            "정적으로 셀 수 없다",
+            data["hookSpecificOutput"]["permissionDecisionReason"],
+            "push 로 늘어난 배열은 선언 시점 크기(2)를 더 이상 못 믿는다",
+        )
+
+    def test_shadowed_named_array_in_other_scope_denies_as_uncountable(self):
+        items = "[" + ",".join(str(i) for i in range(20)) + "]"
+        payload = {
+            "session_id": "s1",
+            "cwd": "/repo",
+            "tool_name": "Workflow",
+            "tool_input": {
+                "script": (
+                    f"const tasks = {items};\n"
+                    "parallel(tasks.map(x => agent(x)));\n"
+                    "function other() { const tasks = [1, 2]; }\n"
+                )
+            },
+        }
+        stdout, stderr, code = _run(payload)
+        data = json.loads(stdout.strip())
+        self.assertEqual(data["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertIn(
+            "정적으로 셀 수 없다",
+            data["hookSpecificOutput"]["permissionDecisionReason"],
+            "이 스캐너는 스코프를 구분하지 않으므로, 다른 함수 안의 동명 지역 "
+            "변수 때문에 진짜 20개짜리를 2개로 잘못 셀 수 있다 — 이름이 두 번 "
+            "이상 선언되면 아예 못 믿는 쪽으로 떨어져야 한다",
+        )
+
+    def test_named_array_without_mutation_still_passes(self):
+        # 과잉 차단 확인: 재선언·재대입·변형이 전혀 없는 평범한 소형 워크플로우는
+        # 여전히 통과해야 한다.
+        payload = {
+            "session_id": "s1",
+            "cwd": "/repo",
+            "tool_name": "Workflow",
+            "tool_input": {
+                "script": "const D = [1, 2, 3];\npipeline(D, d => agent(d));\n"
+            },
+        }
+        stdout, stderr, code = _run(payload)
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            stdout.strip(),
+            "",
+            "재선언·재대입·변형이 없는 배열 위의 소형 팬아웃은 통과해야 한다",
+        )
 
 
 if __name__ == "__main__":
