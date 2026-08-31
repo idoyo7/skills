@@ -1701,9 +1701,14 @@ SNAP_FAIL_OUT2=$(bash "$FZ" snap --cwd "$SNAP_NOGIT" --at +1h --job snapfailjob2
 chmod 755 "$SNAP_RO_DIR2"
 [ "$SNAP_FAIL_RC2" = 0 ] && ok "out 디렉토리 전체가 안 써져도 snap 은 성공" || fail "snap 이 죽어버림: rc=$SNAP_FAIL_RC2 — $SNAP_FAIL_OUT2"
 SNAP_FAIL_HANDOFF2=$(node -e "console.log(JSON.parse(require('fs').readFileSync('$FREEZE_STATE_DIR/snapfailjob2/reservation.json')).handoff)" 2>/dev/null || true)
+# 제품은 handoff 경로를 normalize_handoff(realpathSync)로 정규화해 저장한다.
+# 맥의 $TMPDIR 은 /var/folders/... 심링크라 정규화하면 /private 접두가 붙어,
+# 리터럴 $FREEZE_STATE_DIR 로 접두 비교하면 빗나간다(맥 실측). 같은 정규화를
+# 거친 값끼리 비교한다 — 리눅스에서는 두 값이 같아 판정이 달라지지 않는다.
+STATE_ROOT_REAL=$(node -e 'console.log(require("fs").realpathSync(process.argv[1]))' -- "$FREEZE_STATE_DIR")
 case "$SNAP_FAIL_HANDOFF2" in
-  "$FREEZE_STATE_DIR"/snap-fallback-*) ok "handoff 가 STATE_ROOT 대피 경로로 옮겨짐: $SNAP_FAIL_HANDOFF2" ;;
-  *) fail "STATE_ROOT 대피가 안 됨: $SNAP_FAIL_HANDOFF2" ;;
+  "$STATE_ROOT_REAL"/snap-fallback-*) ok "handoff 가 STATE_ROOT 대피 경로로 옮겨짐: $SNAP_FAIL_HANDOFF2" ;;
+  *) fail "STATE_ROOT 대피가 안 됨: $SNAP_FAIL_HANDOFF2 (기대 접두: $STATE_ROOT_REAL)" ;;
 esac
 [ -n "$SNAP_FAIL_HANDOFF2" ] && [ -f "$SNAP_FAIL_HANDOFF2" ] && ok "대피된 handoff 파일이 실제로 존재함" || fail "대피된 handoff 파일 없음"
 bash "$FZ" cancel snapfailjob2 >/dev/null
@@ -1772,7 +1777,10 @@ case "${CODEX_MODE:-}" in
   cancel_during_fallback)
     # codex 가 실패하는 바로 그 순간 사용자가 취소한 상황을 결정적으로 재현한다
     # (run_probe() 의 폴백 취소 분기, MAJOR 2 검증용).
-    node -e "
+    # 목은 별도 프로세스라 _node.sh 가 정의한 node() 함수를 물려받지 못한다.
+    # 맥의 비대화형 PATH 에는 node 가 없어 맨 node 를 부르면 조용히 실패하고,
+    # 그러면 이 취소 쓰기가 통째로 사라져 재개가 그대로 진행된다(맥 실측).
+    "${FREEZE_NODE_BIN:-node}" -e "
 const fs=require('fs'), p='$jobdir/reservation.json';
 const d=JSON.parse(fs.readFileSync(p)); d.status='cancelled';
 fs.writeFileSync(p, JSON.stringify(d,null,2));"
@@ -1783,7 +1791,10 @@ fs.writeFileSync(p, JSON.stringify(d,null,2));"
     # 이 mock codex 가 do-resume.sh(런북의 $cmd)를 "부르기 직전"에 예약을 취소한다.
     # do-resume.sh 자신의 취소 검사(claude 를 부르기 직전)가 잡아내는지 검증한다
     # (BLOCKER C item 1 — "do-resume 이 불린 직후 취소되는 상황").
-    node -e "
+    # 목은 별도 프로세스라 _node.sh 가 정의한 node() 함수를 물려받지 못한다.
+    # 맥의 비대화형 PATH 에는 node 가 없어 맨 node 를 부르면 조용히 실패하고,
+    # 그러면 이 취소 쓰기가 통째로 사라져 재개가 그대로 진행된다(맥 실측).
+    "${FREEZE_NODE_BIN:-node}" -e "
 const fs=require('fs'), p='$jobdir/reservation.json';
 const d=JSON.parse(fs.readFileSync(p)); d.status='cancelled';
 fs.writeFileSync(p, JSON.stringify(d,null,2));"

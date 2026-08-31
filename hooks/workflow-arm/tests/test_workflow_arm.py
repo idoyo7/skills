@@ -589,7 +589,25 @@ class TestWorkflowArm(unittest.TestCase):
             env = dict(os.environ)
             env["FREEZE_STATE_DIR"] = str(Path(td) / ".state")
             env["CLAUDE_PROJECTS_DIR"] = str(Path(td) / ".projects")
-            env["FREEZE_CLAUDE_BIN"] = "/bin/true"  # 슬리퍼가 프로브 없이 바로 끝나게
+            # 슬리퍼가 프로브 없이 바로 끝나게 아무것도 안 하는 스텁을 물린다.
+            # /bin/true 를 박아두면 맥에서 깨진다 — 맥은 /usr/bin/true 만 있고
+            # resolve_claude_bin 이 "실행 불가" 로 즉시 실패한다(맥 실측).
+            claude_stub = Path(td) / "claude-stub"
+            claude_stub.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            claude_stub.chmod(0o755)
+            env["FREEZE_CLAUDE_BIN"] = str(claude_stub)
+
+            # --at auto 추정 입력을 테스트가 소유한다. 이걸 안 주면 freeze.sh 가
+            # 실제 $HOME/.claude/hud/cache 를 읽어, 그 머신이 방금 Claude Code 를
+            # 썼는지에 따라 통과 여부가 갈린다 — 리눅스에서는 신선한 캐시 덕에
+            # 우연히 통과하고 맥에서는 3시간 묵은 캐시라 실패했다(실측).
+            hud_cache = Path(td) / "hud-cache"
+            hud_cache.mkdir(parents=True, exist_ok=True)
+            (hud_cache / "stdin.test.json").write_text(
+                json.dumps({"rate_limits": {"five_hour": {"resets_at": int(time.time()) + 3 * 3600}}}),
+                encoding="utf-8",
+            )
+            env["FREEZE_HUD_CACHE"] = str(hud_cache)
 
             slug = "".join(c if (c.isalnum() or c == "-") else "-" for c in cwd)
             proj_dir = Path(env["CLAUDE_PROJECTS_DIR"]) / slug
