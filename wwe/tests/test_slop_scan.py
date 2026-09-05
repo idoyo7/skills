@@ -432,6 +432,123 @@ class TestExtractLlm(unittest.TestCase):
 
 
 @unittest.skipIf(_script_missing_reason(), _script_missing_reason() or "")
+class TestCompare(unittest.TestCase):
+    """compare 의 유래 판정·llm 병합·pending 줄·exit 0."""
+
+    def _compare(self, extra: list[str] | None = None) -> tuple[subprocess.CompletedProcess, dict, Path]:
+        import tempfile
+        self._td = tempfile.TemporaryDirectory()
+        td = Path(self._td.name)
+        out = td / "11_slop.json"
+        args = [
+            "compare",
+            "--before", str(CORPUS_DIR / "before.md"),
+            "--after", str(CORPUS_DIR / "after_introduced.md"),
+            "--out", str(out),
+        ] + (extra or [])
+        r = run_slop(args)
+        return r, json.loads(out.read_text(encoding="utf-8")), td
+
+    def test_introduced_terms_counted(self):
+        r, data, _ = self._compare()
+        self.assertEqual(r.returncode, 0)
+        exp = load_expected("before_after.json")
+        grouped: dict[tuple[str, str], int] = {}
+        for it in data["scan"]["introduced"]:
+            self.assertEqual(it["origin"], "윤문")
+            key = (it["id"], it["term"])
+            grouped[key] = grouped.get(key, 0) + 1
+        for want in exp["introduced"]:
+            self.assertEqual(grouped.get((want["id"], want["term"]), 0), want["count"])
+        self.assertEqual(data["scan"]["resolved"], exp["resolved"])
+
+    def test_top_level_key_order(self):
+        _, data, _ = self._compare()
+        self.assertEqual(
+            list(data.keys()),
+            ["version", "source", "scan", "llm", "llm_monolith", "summary"],
+        )
+
+    def test_summary_counts(self):
+        _, data, _ = self._compare()
+        s = data["summary"]
+        for key in ("S1", "S2", "S3", "introduced", "llm_findings"):
+            self.assertIn(key, s)
+        self.assertEqual(s["introduced"], 2)
+        self.assertEqual(s["llm_findings"], 0)
+
+    def test_llm_null_without_inputs(self):
+        _, data, _ = self._compare()
+        self.assertIsNone(data["llm"])
+        self.assertIsNone(data["llm_monolith"])
+
+    def test_judge_wins_and_monolith_kept(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            tdp = Path(td)
+            mono = tdp / "11_slop.json"
+            run_slop([
+                "extract-llm",
+                "--final", str(CORPUS_DIR / "summary_present.md"),
+                "--out", str(mono),
+            ])
+            judge = tdp / "11_slop_judge.json"
+            judge.write_text(json.dumps({
+                "provider": "wwe-slop-judge",
+                "findings": [{"item": "필러", "quote": "이 점은 중요하다", "why": "지워도 손실 없음",
+                              "after": "유지", "origin": "윤문"}],
+                "truncated": False,
+            }, ensure_ascii=False), encoding="utf-8")
+            out = tdp / "final_slop.json"
+            r = run_slop([
+                "compare",
+                "--before", str(CORPUS_DIR / "before.md"),
+                "--after", str(CORPUS_DIR / "after_introduced.md"),
+                "--llm", str(mono), "--judge", str(judge), "--out", str(out),
+            ])
+            self.assertEqual(r.returncode, 0)
+            data = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual(data["llm"]["provider"], "wwe-slop-judge")
+            self.assertEqual(data["llm"]["findings"][0]["origin"], "윤문")
+            self.assertEqual(data["llm_monolith"]["provider"], "monolith")
+            self.assertEqual(len(data["llm_monolith"]["findings"]), 2)
+            self.assertTrue(all(f["origin"] == "원문" for f in data["llm_monolith"]["findings"]))
+            self.assertEqual(data["summary"]["llm_findings"], 1)
+            self.assertTrue(data["source"]["final"].endswith("summary_present.md"),
+                            "extract-llm 이 적어 둔 source.final 이 살아 있어야 한다")
+
+    def test_pending_line_appended(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            pending = Path(td) / "pending.txt"
+            out = Path(td) / "11_slop.json"
+            r = run_slop([
+                "compare",
+                "--before", str(CORPUS_DIR / "clean.md"),
+                "--after", str(CORPUS_DIR / "s1_certainty.md"),
+                "--out", str(out), "--pending", str(pending),
+            ])
+            self.assertEqual(r.returncode, 0)
+            line = pending.read_text(encoding="utf-8").strip()
+            self.assertTrue(line.startswith("gate=S exit=1 action=none reason=초안 관문: "), line)
+            self.assertIn("윤문 유입", line)
+
+    def test_no_pending_when_nothing_triggers(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            pending = Path(td) / "pending.txt"
+            out = Path(td) / "11_slop.json"
+            r = run_slop([
+                "compare",
+                "--before", str(CORPUS_DIR / "clean.md"),
+                "--after", str(CORPUS_DIR / "clean.md"),
+                "--out", str(out), "--pending", str(pending),
+            ])
+            self.assertEqual(r.returncode, 0)
+            self.assertFalse(pending.exists(), "발동이 없으면 pending 줄을 남기지 않는다")
+
+
+@unittest.skipIf(_script_missing_reason(), _script_missing_reason() or "")
 class TestS3SentenceScopedEvidence(unittest.TestCase):
     """S3 근거 표지의 판정 범위(문장 vs 문단)를 직접 검증한다.
 
