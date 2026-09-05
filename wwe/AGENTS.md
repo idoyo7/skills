@@ -17,6 +17,10 @@ humanize-docs는 실행 파일이 아니라 Claude Code가 읽는 스킬이다. 
 - `references/author-tics.txt` — 장르별 반복 구절 시드 목록(v1.3)
 - `references/author-repeat-stop.txt` — 검출 시 걸러낼 불용어 목록(v1.3)
 - `tests/test_author_repeat.py` — 작성자 반복 구절 테스트 하네스(v1.3)
+- `scripts/slop_scan.py` — 초안 관문(게이트 S) 스캐너(v1.4)
+- `references/slop-lexicon.txt` — 초안 관문 결정적 층 사전(v1.4)
+- `references/slop-gate.md` — 초안 관문 LLM 층 지침(v1.4)
+- `agents/wwe-slop-judge.md` — 정밀 모드 전용 비저자 판정 에이전트(v1.4)
 
 ## 설치 절차
 
@@ -32,6 +36,8 @@ cd ~/src/skills && bash install.sh
 # 이미 존재하면 갱신
 git -C <저장소> pull && bash <저장소>/install.sh
 ```
+
+`install.sh`는 스킬 심링크에 이어 `*/agents/*.md`를 `~/.claude/agents/`에 심링크한다. wwe의 `wwe-slop-judge`가 여기에 걸려야 정밀 모드의 초안 관문 판정이 돈다. 같은 이름의 실파일이 있으면 건너뛰고 알리므로, 그 메시지가 보이면 사용자에게 전달한다.
 
 ## 의존성 확인
 
@@ -51,7 +57,7 @@ ls ~/.claude/plugins/cache/im-not-ai/humanize-korean/*/ 2>/dev/null
 bash tests/run.sh
 ```
 
-md_shield·llm_signature·heading_anchor·author_repeat 네 하네스가 순서대로 실행되며 전부 통과해야 한다. 이 테스트는 humanize-korean 플러그인이 없어도 통과한다(LLM 호출 없이 스킬 자체 로직만 검증). 결과(통과/실패 개수, 실패가 있다면 어느 하네스인지)를 사용자에게 그대로 보고한다.
+md_shield·llm_signature·heading_anchor·author_repeat·slop_scan 다섯 하네스가 순서대로 실행되며 전부 통과해야 한다. 이 테스트는 humanize-korean 플러그인이 없어도 통과한다(LLM 호출 없이 스킬 자체 로직만 검증). 결과(통과/실패 개수, 실패가 있다면 어느 하네스인지)를 사용자에게 그대로 보고한다.
 
 ## 사용 시 알아야 할 것
 

@@ -1,5 +1,19 @@
 # CHANGELOG
 
+## 1.4.0 — 2026-09-05
+
+초안 관문(게이트 S)을 더했다. 문장과 레이아웃의 AI 티를 걷어도 남는 축 — 근거 없는 단정, 지워도 손실 없는 문장, 출처 없는 수치 — 을 세어서 승인 전에 보여준다. 고치지 않는 게 이 게이트의 정의다.
+
+`scripts/slop_scan.py` 신설 — `scan`(원본 채점)·`extract-llm`(monolith 편승 판정 추출)·`compare`(유래 판정·판정 병합) 세 하위 명령. S1 확신 표지는 밀도, S2 필러는 문장 비율, S3 미검증 사례는 문단 근거 표지로 판정한다. 출력은 `llm_signature.metric()`과 같은 계약이고 exit는 항상 0이다.
+
+`references/slop-lexicon.txt`·`references/slop-gate.md` 신설 — 결정적 층 사전과 LLM 층 지침. 지침은 Phase 4가 `02_diagnosis.md` 뒤에 붙여 monolith 콜에 편승시키므로 경제 모드의 LLM 콜 수는 그대로다.
+
+`agents/wwe-slop-judge.md` 신설 — 정밀 모드(`STRICT=1`)에서만 1콜 붙는 비저자 판정자. 저자가 자기 글을 승인하는 자리를 없애려고 옛 W4 대조 패스에서 구조만 가져왔다. `install.sh`에 `*/agents/*.md` 심링크 단계를 붙여 설치된다.
+
+Phase 1에 `SLOP` 옵션(기본 1), Phase 8에 승인 전 고지 표, Phase 9에 §4b, pending 규약에 `gate=S`를 넣었다. `action=none`이라 `보류 재시도`는 사유만 표시하고 선택지에서 뺀다.
+
+`tests/test_slop_scan.py`와 `tests/slop_corpus/` 신설, `tests/run.sh`에 다섯째 블록. humanize-korean 없이 통과한다.
+
 ## 1.3.4 — 2026-08-31
 
 - humanize-korean 경로 해석을 고정 깊이 상승에서 `.claude-plugin/` 상향 탐색으로 바꿨다. upstream im-not-ai 가 스킬 트리를 `.claude/skills/` 에서 `skills/` 로 옮겨(v2.3.2) 기존 `cd -P "$HOME/.claude/skills/humanize-korean/../../.."` 3단 상승이 저장소 루트가 아닌 그 상위를 가리키게 됐고, 그러면 Phase 0 의 스크립트 존재 가드가 곧바로 exit 1 한다. `quick-rules.md` 경로도 레이아웃에 묶여 있던 것을 신·구 양쪽에서 찾도록 풀었다. 세 곳(Phase 0·4·7)을 같은 로직으로 맞췄고, 신 레이아웃 시뮬레이션과 실환경 양쪽에서 실행 검증했다. upstream 자신도 같은 이유로 고정 깊이를 버린 방식을 쓴다.
