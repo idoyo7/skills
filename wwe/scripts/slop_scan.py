@@ -320,6 +320,11 @@ def m_S2(sents: list[dict], lex: dict) -> tuple[dict, list[dict]]:
 S3_TRIGGER_HITS = 1
 S3_VALUE_SCALE = 5.0
 
+# judge 발췌의 유래를 원문 문장과 대조할 때 쓰는 자카드 하한 (verify_judge_origin 2단계).
+# 원문이 윤문으로 다시 쓰이면 발췌가 문자 그대로는 안 남으므로, 문자 대조만으로는
+# "문제는 원문에 있었다"를 놓친다. 토큰 겹침으로 그 경우를 건진다.
+ORIGIN_FUZZY_MIN = 0.6
+
 _NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
 
 # 근거 표지는 "확인하러 갈 곳"이 어디 있는지에 따라 판정 범위가 갈린다(설계 스펙 §2-1).
@@ -571,25 +576,69 @@ def normalize_ws(text: str) -> str:
     return _WS_RE.sub(" ", text).strip()
 
 
+_ORIGIN_TOKEN_RE = re.compile(r"[가-힣A-Za-z0-9]{2,}")
+
+
+def origin_tokens(text: str) -> set[str]:
+    """유래 대조용 토큰 — 두 글자 이상의 한글·영숫자 덩어리."""
+    return set(_ORIGIN_TOKEN_RE.findall(text))
+
+
+def _jaccard(a: set[str], b: set[str]) -> float:
+    union = a | b
+    return (len(a & b) / len(union)) if union else 0.0
+
+
 def verify_judge_origin(judge: dict, before_text: str) -> dict:
     """judge 검출의 origin 을 원문 대조로 다시 매긴다.
 
     에이전트 정의는 "발췌가 원본에 그대로 있으면 원문" 이라는 문자열 기준을 주지만,
     모델이 그 규칙을 문자열이 아니라 문제의 출처로 읽는 일이 실측에서 관측됐다(1.4.0).
-    유래 판정을 모델의 규칙 준수에 맡기지 않고 여기서 결정적으로 다시 매긴다 —
-    공백 정규화 후 원문에 그대로 있으면 `원문`, 없으면 `윤문`이다. 다시 매긴 항목에는
-    `origin_verified: true` 를 달아 기계 판정과 모델이 준 값을 읽는 쪽이 구분할 수 있게 한다.
-    quote 가 비어 있으면 대조할 것이 없으므로 모델이 준 값을 그대로 둔다.
+    유래 판정을 모델의 규칙 준수에 맡기지 않고 여기서 결정적으로 다시 매긴다.
+
+    다만 문자 대조 하나로는 스펙이 말한 "이 문제가 원문에 있었나"를 못 지킨다 —
+    judge 는 candidate 를 읽으므로, 윤문이 문장을 다시 쓰면 문제가 원문 유래여도
+    발췌가 원문에 문자 그대로는 없다. 그래서 두 단계로 본다.
+
+    1. 공백 정규화 후 원문에 그대로 있으면 `원문` / `origin_method: verbatim`.
+    2. 아니면 원문 산문을 문장으로 쪼개 토큰 자카드를 재고, 최고점이
+       ORIGIN_FUZZY_MIN 이상이면 `원문` / `fuzzy` 로 보고 그 문장의 줄번호를
+       `origin_match_line` 에 남긴다. 그 아래면 `윤문` / `none`.
+
+    세 경우 모두 `origin_verified: true` 를 달아 기계 판정임을 표시한다. quote 가
+    비어 있으면 대조할 것이 없으므로 모델이 준 값을 그대로 두고 아무 표시도 안 한다.
     """
     haystack = normalize_ws(before_text)
+    units, _, _ = prose_units(before_text)
+    src = [(s["line"], origin_tokens(s["text"])) for s in sentences(units)]
+
     out = dict(judge)
     findings: list[dict] = []
     for f in judge.get("findings") or []:
         g = dict(f)
         quote = normalize_ws(str(g.get("quote") or ""))
-        if quote:
-            g["origin"] = "원문" if quote in haystack else "윤문"
-            g["origin_verified"] = True
+        if not quote:
+            findings.append(g)
+            continue
+        g["origin_verified"] = True
+        if quote in haystack:
+            g["origin"] = "원문"
+            g["origin_method"] = "verbatim"
+            findings.append(g)
+            continue
+        q = origin_tokens(quote)
+        best_line, best = None, 0.0
+        for line, toks in src:
+            r = _jaccard(q, toks)
+            if r > best:
+                best, best_line = r, line
+        if best >= ORIGIN_FUZZY_MIN:
+            g["origin"] = "원문"
+            g["origin_method"] = "fuzzy"
+            g["origin_match_line"] = best_line
+        else:
+            g["origin"] = "윤문"
+            g["origin_method"] = "none"
         findings.append(g)
     out["findings"] = findings
     return out
