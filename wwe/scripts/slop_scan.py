@@ -27,6 +27,7 @@ import argparse
 import json
 import re
 import sys
+import traceback
 from pathlib import Path
 
 DEFAULT_LEXICON = Path(__file__).resolve().parent.parent / "references" / "slop-lexicon.txt"
@@ -74,8 +75,12 @@ def load_lexicon(path) -> dict[str, list[dict]] | None:
             continue
         m = SECTION_RE.match(line)
         if m:
-            current = m.group(1)
-            sections.setdefault(current, [])
+            name = m.group(1)
+            if name in LEXICON_SECTIONS:
+                current = name
+            else:
+                print(f"slop_scan: lexicon 알 수 없는 절 [{name}] 무시", file=sys.stderr)
+                current = None
             continue
         if current is None:
             continue
@@ -87,7 +92,11 @@ def load_lexicon(path) -> dict[str, list[dict]] | None:
             pattern = body[3:].strip()
             try:
                 compiled = re.compile(pattern)
-            except re.error:
+            except re.error as e:
+                print(
+                    f"slop_scan: lexicon 정규식 오류 무시 [{current}] {line!r}: {e}",
+                    file=sys.stderr,
+                )
                 continue
             sections[current].append({"term": label or pattern, "re": compiled})
         else:
@@ -335,7 +344,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return args.func(args)
     except Exception as e:  # noqa: BLE001 — CLI 최상위 안전망. exit 는 항상 0 이다.
-        print(f"오류: {e}", file=sys.stderr)
+        print(f"slop_scan: 내부 오류: {type(e).__name__}: {e}", file=sys.stderr)
+        print(traceback.format_exc(), file=sys.stderr)
         return 0
 
 
