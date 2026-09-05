@@ -192,7 +192,7 @@ class TestSentencesUnit(unittest.TestCase):
 class TestFixtureExpectations(unittest.TestCase):
     """픽스처마다 expected/*.json 의 발동 목록·히트 하한·히트 상한을 검증한다."""
 
-    FIXTURES: list[str] = ["s1_certainty", "clean"]
+    FIXTURES: list[str] = ["s1_certainty", "clean", "s2_filler"]
 
     def test_fixtures_match_expected(self):
         for name in self.FIXTURES:
