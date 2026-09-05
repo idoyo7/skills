@@ -430,6 +430,40 @@ class TestExtractLlm(unittest.TestCase):
         self.assertIsInstance(data["llm_monolith"], dict)
         self.assertIn("error", data["llm_monolith"])
 
+    def test_trailing_comment_with_quote_char_does_not_break_block(self):
+        """값 뒤 주석 안에 같은 인용부호가 있어도 블록 전체가 깨지면 안 된다 —
+        닫는 인용부호는 rfind 가 아니라 "뒤가 비었거나 # 로 시작하는 마지막 인용부호"다."""
+        content = (
+            "본문.\n\n"
+            "<!-- HUMANIZE-SUMMARY v1.6.1\n"
+            "slop_findings:\n"
+            "  - item: 확신\n"
+            '    quote: "이 방식은 어떤 경우에도 안전하다"   # "핵심" 문장\n'
+            '    why: "보편양화, 근거 없음"\n'
+            "-->\n"
+        )
+        rc, data = self._extract_content(content)
+        self.assertEqual(rc, 0)
+        llm = data["llm_monolith"]
+        self.assertNotIn("error", llm, f"주석 속 인용부호가 종결자로 오인됐다: {llm}")
+        self.assertEqual(llm["findings"][0]["quote"], "이 방식은 어떤 경우에도 안전하다")
+        self.assertEqual(llm["findings"][0]["why"], "보편양화, 근거 없음")
+
+    def test_trailing_comment_without_closing_quote_still_errors(self):
+        """주석이 붙어도 진짜 닫는 인용부호가 없으면 여전히 malformed 로 남는다."""
+        content = (
+            "본문.\n\n"
+            "<!-- HUMANIZE-SUMMARY v1.6.1\n"
+            "slop_findings:\n"
+            "  - item: 확신\n"
+            '    quote: "열린 채로   # 주석\n'
+            "-->\n"
+        )
+        rc, data = self._extract_content(content)
+        self.assertEqual(rc, 0)
+        self.assertIsInstance(data["llm_monolith"], dict)
+        self.assertIn("error", data["llm_monolith"])
+
 
 @unittest.skipIf(_script_missing_reason(), _script_missing_reason() or "")
 class TestCompare(unittest.TestCase):
@@ -516,6 +550,84 @@ class TestCompare(unittest.TestCase):
             self.assertEqual(data["summary"]["llm_findings"], 1)
             self.assertTrue(data["source"]["final"].endswith("summary_present.md"),
                             "extract-llm 이 적어 둔 source.final 이 살아 있어야 한다")
+
+    def test_judge_top_level_array_falls_back_to_monolith(self):
+        """judge 산출물이 스키마를 벗어난 최상위 배열이면 결정적 층 보고를
+        통째로 잃지 않고 monolith 판정으로 떨어져야 한다(exit 0, out 파일 기록)."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            tdp = Path(td)
+            mono = tdp / "11_slop.json"
+            run_slop([
+                "extract-llm",
+                "--final", str(CORPUS_DIR / "summary_present.md"),
+                "--out", str(mono),
+            ])
+            judge = tdp / "11_slop_judge.json"
+            judge.write_text("[1, 2]", encoding="utf-8")
+            out = tdp / "final_slop.json"
+            r = run_slop([
+                "compare",
+                "--before", str(CORPUS_DIR / "before.md"),
+                "--after", str(CORPUS_DIR / "after_introduced.md"),
+                "--llm", str(mono), "--judge", str(judge), "--out", str(out),
+            ])
+            self.assertEqual(r.returncode, 0)
+            self.assertTrue(out.exists(), "스키마를 벗어난 judge JSON 에도 결과가 기록돼야 한다")
+            data = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual(data["llm"]["provider"], "monolith")
+            self.assertIn("summary", data)
+
+    def test_judge_non_dict_findings_entries_are_dropped(self):
+        """findings 원소가 객체가 아니면 그 항목만 버리고 나머지 결과는 유지한다."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            tdp = Path(td)
+            judge = tdp / "11_slop_judge.json"
+            judge.write_text(json.dumps({
+                "provider": "wwe-slop-judge",
+                "findings": ["확신 표지가 많다"],
+                "truncated": False,
+            }, ensure_ascii=False), encoding="utf-8")
+            out = tdp / "final_slop.json"
+            r = run_slop([
+                "compare",
+                "--before", str(CORPUS_DIR / "before.md"),
+                "--after", str(CORPUS_DIR / "after_introduced.md"),
+                "--judge", str(judge), "--out", str(out),
+            ])
+            self.assertEqual(r.returncode, 0)
+            self.assertTrue(out.exists())
+            data = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual(data["llm"]["provider"], "wwe-slop-judge")
+            self.assertEqual(data["llm"]["findings"], [])
+
+    def test_judge_error_falls_back_to_monolith(self):
+        """스펙 §7: judge 호출 실패(error 키)는 monolith 판정을 그대로 유지한다."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            tdp = Path(td)
+            mono = tdp / "11_slop.json"
+            run_slop([
+                "extract-llm",
+                "--final", str(CORPUS_DIR / "summary_present.md"),
+                "--out", str(mono),
+            ])
+            judge = tdp / "11_slop_judge.json"
+            judge.write_text(json.dumps({
+                "provider": "wwe-slop-judge", "error": "judge 호출 실패",
+            }, ensure_ascii=False), encoding="utf-8")
+            out = tdp / "final_slop.json"
+            r = run_slop([
+                "compare",
+                "--before", str(CORPUS_DIR / "before.md"),
+                "--after", str(CORPUS_DIR / "after_introduced.md"),
+                "--llm", str(mono), "--judge", str(judge), "--out", str(out),
+            ])
+            self.assertEqual(r.returncode, 0)
+            data = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual(data["llm"]["provider"], "monolith")
+            self.assertEqual(len(data["llm"]["findings"]), 2)
 
     def test_pending_line_appended(self):
         import tempfile

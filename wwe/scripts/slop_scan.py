@@ -474,12 +474,22 @@ def _unquote(value: str) -> str:
     if v[:1] in ('"', "'"):
         quote = v[0]
         # 첫 닫는 인용부호에서 끊으면 값 안의 이스케이프/중첩 인용부호가 잘린다 —
-        # 닫는 인용부호는 항상 "마지막" 인용부호(뒤에 공백·주석만 남는 자리)다.
-        last_q = v.rfind(quote)
-        tail = v[last_q + 1:].strip()
-        if last_q <= 0 or (tail and not tail.startswith("#")):
+        # 그렇다고 마지막 인용부호를 무조건 고르면 트레일링 주석 안의 인용부호에
+        # 걸린다. 닫는 인용부호는 "뒤가 비었거나 `#` 로 시작하는 마지막 인용부호"다 —
+        # 뒤에서부터 훑어 그 조건을 처음 만족하는 자리를 채택한다.
+        close = -1
+        idx = len(v)
+        while True:
+            idx = v.rfind(quote, 0, idx)
+            if idx <= 0:
+                break
+            tail = v[idx + 1:].strip()
+            if not tail or tail.startswith("#"):
+                close = idx
+                break
+        if close < 0:
             raise ValueError(f"닫는 인용부호가 없다: {value!r}")
-        inner = v[1:last_q]
+        inner = v[1:close]
         return inner.replace(f"\\{quote}", quote).replace("\\\\", "\\")
     if "#" in v:
         v = v.split("#", 1)[0]
@@ -621,7 +631,14 @@ def verify_judge_origin(judge: dict, before_text: str) -> dict:
 
     out = dict(judge)
     findings: list[dict] = []
-    for f in judge.get("findings") or []:
+    raw_findings = judge.get("findings")
+    if not isinstance(raw_findings, list):
+        raw_findings = []
+    for f in raw_findings:
+        # 모델이 findings 원소를 문자열 등으로 낼 수 있다 — 객체가 아니면 판정할
+        # 것이 없으므로 버린다. 원소 하나가 나빠도 나머지 검출까지 잃지 않는다.
+        if not isinstance(f, dict):
+            continue
         g = dict(f)
         # 기계 표시 키는 기계만 붙인다 — 모델이 흉내 낸 값이 섞이면 읽는 쪽이 속는다.
         # 모든 갈래에 앞서 한 번 걷어내고, 아래에서 실제로 판정한 것만 다시 단다.
@@ -671,11 +688,8 @@ def merge_llm(llm_monolith: dict | None, judge: dict | None, before_text: str = 
 def build_pending_line(summary: dict, triggered: list[str]) -> str | None:
     if not triggered:
         return None
-    return (
-        "gate=S exit=1 action=none reason=초안 관문: "
-        f"확신 {summary['S1']}·필러 {summary['S2']}·미검증 {summary['S3']}"
-        f" (윤문 유입 {summary['introduced']})"
-    )
+    parts = "·".join(f"{ITEM_LABEL[k]} {summary[k]}" for k in ("S1", "S2", "S3"))
+    return f"gate=S exit=1 action=none reason=초안 관문: {parts} (윤문 유입 {summary['introduced']})"
 
 
 def _load_json(path: str | None) -> dict | None:
@@ -685,9 +699,12 @@ def _load_json(path: str | None) -> dict | None:
     if not p.exists():
         return None
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
+        data = json.loads(p.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
+    # 스키마를 벗어난 최상위 값(배열·문자열 등)은 판정 불능으로 본다 — 여기서
+    # 걸러야 merge_llm·verify_judge_origin 이 예외 없이 기존 "없음" 경로로 떨어진다.
+    return data if isinstance(data, dict) else None
 
 
 # ---------------------------------------------------------------------------

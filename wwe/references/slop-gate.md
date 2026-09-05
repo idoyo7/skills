@@ -6,16 +6,16 @@
 - **필러** — 지워도 정보가 줄지 않는 문장·문단. 의의 선언·재진술·전환 문구. 문단 단위도 본다.
 - **미검증** — 출처·데이터·시연 없이 제시된 수치·사례·인용. "~로 알려져 있다", 이름 없는 전문가, 검증 불가 사례.
 
-최대 8건, 심각한 순으로 싣는다. 넘치면 `slop_findings_truncated: true` 로 표시한다.
+최대 8건, 심각한 순으로 싣는다. 넘치면 `slop_findings_truncated: true` 로 표시한다. `quote` 는 원문 발췌 80자 이내(⟦HZ-…⟧ 토큰 포함 가능)로, `why` 는 30자 이내로 쓰고, `after` 는 윤문 후 그 구간이 유지·제거·수정 중 무엇이 됐는지 적는다.
 
-결과는 `final.md` 끝의 `HUMANIZE-SUMMARY` 블록 안, `residual_findings` 바로 뒤에 이 형식으로 쓴다. `quote`·`why` 값 안에는 `-->` 를 절대 쓰지 말고, 값 안의 큰따옴표는 `\"` 로 이스케이프한다.
+결과는 `final.md` 끝의 `HUMANIZE-SUMMARY` 블록 안, `residual_findings` 바로 뒤에 이 형식으로 쓴다. `quote`·`why` 값 안에는 `-->` 를 절대 쓰지 말고, 값 안의 큰따옴표는 `\"` 로 이스케이프하며, 값 뒤에는 어떤 줄에도 `#` 주석을 달지 않는다.
 
 ```
-slop_findings:            # 윤문 전 원문 기준, 최대 8건
-  - item: 확신              # 확신 | 필러 | 미검증
-    quote: "…"              # 원문 발췌 80자 이내, ⟦HZ-…⟧ 토큰 포함 가능
-    why: "…"                # 30자 이내
-    after: 유지             # 유지 | 제거 | 수정 — 윤문 후 그 구간의 상태
+slop_findings:
+  - item: 확신
+    quote: "…"
+    why: "…"
+    after: 유지
 slop_findings_truncated: false
 ```
 
