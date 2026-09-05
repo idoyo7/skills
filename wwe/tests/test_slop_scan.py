@@ -547,6 +547,24 @@ class TestCompare(unittest.TestCase):
             self.assertEqual(r.returncode, 0)
             self.assertFalse(pending.exists(), "발동이 없으면 pending 줄을 남기지 않는다")
 
+    def test_pending_write_failure_degrades_gracefully(self):
+        """--pending 의 부모 디렉터리가 없으면 traceback 대신 안내 후 정상 진행한다."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            pending = Path(td) / "nosuchdir" / "pending.txt"
+            out = Path(td) / "11_slop.json"
+            r = run_slop([
+                "compare",
+                "--before", str(CORPUS_DIR / "before.md"),
+                "--after", str(CORPUS_DIR / "after_introduced.md"),
+                "--out", str(out), "--pending", str(pending),
+            ])
+            self.assertEqual(r.returncode, 0)
+            self.assertIn("pending 기록 실패", r.stderr)
+            data = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual(data["summary"]["introduced"], 2)
+            self.assertIn("초안 관문:", r.stdout)
+
 
 @unittest.skipIf(_script_missing_reason(), _script_missing_reason() or "")
 class TestS3SentenceScopedEvidence(unittest.TestCase):
