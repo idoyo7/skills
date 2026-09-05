@@ -439,6 +439,81 @@ def read_text(path: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
+# 6b. HUMANIZE-SUMMARY 최소 파서 (PyYAML 금지 — 들여쓰기 2칸 리스트와 키:값만 읽는다)
+# ---------------------------------------------------------------------------
+
+SUMMARY_OPEN_RE = re.compile(r"<!--\s*HUMANIZE-SUMMARY\b")
+SLOP_KEY_RE = re.compile(r"^slop_findings\s*:")
+TRUNC_KEY_RE = re.compile(r"^slop_findings_truncated\s*:")
+
+
+def extract_summary_block(text: str) -> str | None:
+    m = SUMMARY_OPEN_RE.search(text)
+    if not m:
+        return None
+    end = text.find("-->", m.end())
+    return text[m.end(): end if end >= 0 else len(text)]
+
+
+def _unquote(value: str) -> str:
+    v = value.strip()
+    if v[:1] in ('"', "'"):
+        quote = v[0]
+        end = v.find(quote, 1)
+        if end > 0:
+            return v[1:end]
+    if "#" in v:
+        v = v.split("#", 1)[0]
+    return v.strip()
+
+
+def parse_slop_findings(block: str) -> dict | None:
+    lines = block.splitlines()
+    findings: list[dict] = []
+    truncated = False
+    seen = False
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        # 탭 들여쓰기도 들여쓰기다 — 공백만 보면 탭으로 들여쓴 하위 키를 최상위로 오판한다.
+        top_level = bool(stripped) and not line.startswith((" ", "\t"))
+        if top_level and SLOP_KEY_RE.match(stripped):
+            seen = True
+            rest = _unquote(stripped.split(":", 1)[1])
+            i += 1
+            if rest == "[]":
+                continue
+            current: dict | None = None
+            while i < len(lines):
+                nxt = lines[i]
+                if nxt.strip() and not nxt.startswith((" ", "\t")):
+                    break
+                body = nxt.strip()
+                if body.startswith("- "):
+                    current = {}
+                    findings.append(current)
+                    body = body[2:].strip()
+                if current is not None and ":" in body:
+                    key, value = body.split(":", 1)
+                    current[key.strip()] = _unquote(value)
+                i += 1
+            continue
+        if top_level and TRUNC_KEY_RE.match(stripped):
+            truncated = _unquote(stripped.split(":", 1)[1]).lower() == "true"
+        i += 1
+    if not seen:
+        return None
+    for f in findings:
+        if "item" not in f:
+            raise ValueError("slop_findings 항목에 item 키가 없다")
+        # monolith 는 윤문 전 원문을 판정한다 — 이 층의 검출은 예외 없이 원문 유래다.
+        # 윤문이 들여온 것은 결정적 층의 차집합(compare 의 introduced)만 판정한다.
+        f["origin"] = "원문"
+    return {"provider": "monolith", "findings": findings, "truncated": truncated}
+
+
+# ---------------------------------------------------------------------------
 # 7. CLI
 # ---------------------------------------------------------------------------
 
@@ -481,7 +556,33 @@ def cmd_scan(args: argparse.Namespace) -> int:
 
 
 def cmd_extract_llm(args: argparse.Namespace) -> int:
-    print("extract-llm: 미구현")
+    llm_monolith: dict | None = None
+    note: str | None = None
+    text = read_text(args.final)
+    if text is None:
+        note = "final.md 를 읽을 수 없음"
+    else:
+        block = extract_summary_block(text)
+        if block is None:
+            note = "HUMANIZE-SUMMARY 블록 없음"
+        else:
+            try:
+                llm_monolith = parse_slop_findings(block)
+                if llm_monolith is None:
+                    note = "slop_findings 키 없음"
+            except Exception as e:  # noqa: BLE001 — 파싱 실패는 error 객체로 남기고 진행한다
+                llm_monolith = {"error": f"slop_findings 파싱 실패: {e}"}
+    # source 는 스펙 §133의 세 키를 다 갖춘 채로 시작한다 — compare 가 before/after 만 채운다.
+    payload: dict = {
+        "version": 1,
+        "source": {"before": None, "after": None, "final": args.final},
+        "llm_monolith": llm_monolith,
+    }
+    if note:
+        payload["note"] = note   # Phase 9가 "LLM 판정 누락" 사유를 그대로 옮겨 적는다
+    Path(args.out).write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    state = note if llm_monolith is None else ("파싱 실패" if "error" in llm_monolith else f"{len(llm_monolith['findings'])}건")
+    print(f"초안 관문: monolith 판정 {state} → {args.out}")
     return 0
 
 
