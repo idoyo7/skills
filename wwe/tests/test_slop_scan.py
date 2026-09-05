@@ -326,6 +326,110 @@ class TestExtractLlm(unittest.TestCase):
             self.assertIsNone(data["llm_monolith"])
             self.assertEqual(data.get("note"), "HUMANIZE-SUMMARY 블록 없음")
 
+    def _extract_content(self, content: str) -> tuple[int, dict]:
+        """임의 final.md 본문으로 extract-llm 을 실행한다(코퍼스 고정 픽스처 밖의 경우용)."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            final = Path(td) / "final.md"
+            final.write_text(content, encoding="utf-8")
+            out = Path(td) / "11_slop.json"
+            r = run_slop(["extract-llm", "--final", str(final), "--out", str(out)])
+            self.assertTrue(out.exists(), f"산출물이 없다: {r.stdout}\n{r.stderr}")
+            return r.returncode, json.loads(out.read_text(encoding="utf-8"))
+
+    def test_arrow_inside_quote_does_not_truncate_block(self):
+        """quote 값 안의 "-->" 로 블록이 잘리면 뒤 finding 이 통째로 사라진다 —
+        종결자는 첫 "-->" 가 아니라 블록 맨 끝의 마지막 "-->" 여야 한다."""
+        content = (
+            "윤문된 본문이 여기 온다.\n\n"
+            "<!-- HUMANIZE-SUMMARY v1.6.1\n"
+            "slop_findings:\n"
+            "  - item: 확신\n"
+            '    quote: "이 방식은 어떤 경우에도 안전하다"\n'
+            '    why: "보편양화, 근거 없음"\n'
+            "    after: 유지\n"
+            "  - item: 변환\n"
+            '    quote: "A --> B 로 바뀐다"\n'
+            '    why: "예시"\n'
+            "    after: 유지\n"
+            "  - item: 미검증\n"
+            '    quote: "대부분의 팀이 30% 이상 절감했다"\n'
+            '    why: "출처 없음"\n'
+            "    after: 수정\n"
+            "slop_findings_truncated: false\n"
+            "-->\n"
+        )
+        rc, data = self._extract_content(content)
+        self.assertEqual(rc, 0)
+        llm = data["llm_monolith"]
+        self.assertIsNotNone(llm, f"블록이 잘려 findings 가 통째로 사라졌다: {data}")
+        self.assertNotIn("error", llm)
+        self.assertEqual(len(llm["findings"]), 3, "-->  뒤의 finding 까지 다 남아야 한다")
+        self.assertEqual(llm["findings"][1]["item"], "변환")
+        self.assertEqual(
+            llm["findings"][1]["quote"], "A --> B 로 바뀐다",
+            "quote 안의 --> 가 종결자로 오인되어 잘리면 안 된다",
+        )
+        self.assertEqual(llm["findings"][2]["item"], "미검증")
+
+    def test_no_terminator_yields_error(self):
+        """HUMANIZE-SUMMARY 시작 마커는 있는데 "-->" 종결자가 아예 없으면 malformed 다."""
+        content = (
+            "윤문된 본문이 여기 온다.\n\n"
+            "<!-- HUMANIZE-SUMMARY v1.6.1\n"
+            "slop_findings:\n"
+            "  - item: 확신\n"
+            '    quote: "종결자가 없다"\n'
+        )
+        rc, data = self._extract_content(content)
+        self.assertEqual(rc, 0)
+        self.assertIsInstance(data["llm_monolith"], dict)
+        self.assertEqual(data["llm_monolith"].get("error"), "HUMANIZE-SUMMARY 종결자 없음")
+
+    def test_escaped_inner_quotes_unescaped(self):
+        content = (
+            "본문.\n\n"
+            "<!-- HUMANIZE-SUMMARY v1.6.1\n"
+            "slop_findings:\n"
+            "  - item: 인용\n"
+            '    quote: "그는 \\"정말\\" 좋다"\n'
+            "-->\n"
+        )
+        rc, data = self._extract_content(content)
+        self.assertEqual(rc, 0)
+        llm = data["llm_monolith"]
+        self.assertNotIn("error", llm, f"이스케이프된 중첩 인용부호가 파싱 실패로 처리됐다: {llm}")
+        self.assertEqual(llm["findings"][0]["quote"], '그는 "정말" 좋다')
+
+    def test_unescaped_inner_quotes_still_parsed(self):
+        content = (
+            "본문.\n\n"
+            "<!-- HUMANIZE-SUMMARY v1.6.1\n"
+            "slop_findings:\n"
+            "  - item: 인용\n"
+            '    quote: "그는 "정말" 좋다"\n'
+            "-->\n"
+        )
+        rc, data = self._extract_content(content)
+        self.assertEqual(rc, 0)
+        llm = data["llm_monolith"]
+        self.assertNotIn("error", llm, f"이스케이프 안 된 중첩 인용부호가 파싱 실패로 처리됐다: {llm}")
+        self.assertEqual(llm["findings"][0]["quote"], '그는 "정말" 좋다')
+
+    def test_unterminated_quote_yields_error(self):
+        content = (
+            "본문.\n\n"
+            "<!-- HUMANIZE-SUMMARY v1.6.1\n"
+            "slop_findings:\n"
+            "  - item: 인용\n"
+            '    quote: "열린 채로\n'
+            "-->\n"
+        )
+        rc, data = self._extract_content(content)
+        self.assertEqual(rc, 0)
+        self.assertIsInstance(data["llm_monolith"], dict)
+        self.assertIn("error", data["llm_monolith"])
+
 
 @unittest.skipIf(_script_missing_reason(), _script_missing_reason() or "")
 class TestS3SentenceScopedEvidence(unittest.TestCase):
