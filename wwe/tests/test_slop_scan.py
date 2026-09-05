@@ -10,9 +10,12 @@ unittest + subprocess. 구현을 임포트하지 않고 CLI 계약(스펙)만 �
     (또는 run.sh 경유)
 """
 
+import contextlib
+import io
 import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -20,7 +23,8 @@ TESTS_DIR = Path(__file__).resolve().parent
 SKILL_DIR = TESTS_DIR.parent
 CORPUS_DIR = TESTS_DIR / "slop_corpus"
 EXPECTED_DIR = CORPUS_DIR / "expected"
-SCRIPT = SKILL_DIR / "scripts" / "slop_scan.py"
+SCRIPTS_DIR = SKILL_DIR / "scripts"
+SCRIPT = SCRIPTS_DIR / "slop_scan.py"
 LEXICON = SKILL_DIR / "references" / "slop-lexicon.txt"
 
 
@@ -61,6 +65,20 @@ def load_expected(name: str) -> dict:
     return json.loads((EXPECTED_DIR / name).read_text(encoding="utf-8"))
 
 
+def _import_slop_scan():
+    """slop_scan 모듈을 직접 임포트한다(내부 함수 단위 테스트용).
+
+    `scripts/` 를 sys.path 에 얹는 방식 — test_llm_signature.py 계열 하네스가
+    스크립트를 로드하는 방식과 같다. CLI 계약 테스트(TestCliContract)는
+    subprocess 로만 검증하고, 이 임포트는 순수 함수 단위 테스트에만 쓴다.
+    """
+    if str(SCRIPTS_DIR) not in sys.path:
+        sys.path.insert(0, str(SCRIPTS_DIR))
+    import slop_scan
+
+    return slop_scan
+
+
 @unittest.skipIf(_script_missing_reason(), _script_missing_reason() or "")
 class TestCliContract(unittest.TestCase):
     """CLI 계약 기본기: 서브커맨드 존재, exit code, scan 의 JSON 출력."""
@@ -90,6 +108,84 @@ class TestCliContract(unittest.TestCase):
         self.assertIsNotNone(data, "stdout 마지막 줄이 JSON 이어야 한다")
         self.assertIn("metrics", data)
         self.assertIsInstance(data["metrics"], list)
+
+
+@unittest.skipIf(_script_missing_reason(), _script_missing_reason() or "")
+class TestLoadLexiconUnit(unittest.TestCase):
+    """load_lexicon 직접 호출 — 정상/라벨 항목은 살리고 깨진 정규식은 버리며 로그를 남긴다."""
+
+    def test_parses_plain_and_labeled_entries_skips_broken_regex(self):
+        slop_scan = _import_slop_scan()
+        content = (
+            "[S1_certainty]\n"
+            "필터단어\n"
+            "re:테스트\\d+ => 테스트라벨\n"
+            "re:(unclosed\n"
+        )
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".txt", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(content)
+            path = f.name
+        try:
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                lex = slop_scan.load_lexicon(path)
+            self.assertIsNotNone(lex)
+            terms = {e["term"] for e in lex["S1_certainty"]}
+            self.assertIn("필터단어", terms, "일반 항목은 그대로 남아야 한다")
+            self.assertIn("테스트라벨", terms, "=> 라벨이 붙은 정규식 항목은 라벨로 남아야 한다")
+            self.assertEqual(
+                len(lex["S1_certainty"]), 2, "깨진 정규식(re:(unclosed) 항목은 빠져야 한다"
+            )
+            self.assertIn(
+                "정규식 오류",
+                stderr.getvalue(),
+                "깨진 정규식은 조용히 버려지지 않고 stderr 에 한 줄 남아야 한다",
+            )
+        finally:
+            Path(path).unlink(missing_ok=True)
+
+
+@unittest.skipIf(_script_missing_reason(), _script_missing_reason() or "")
+class TestProseUnitsUnit(unittest.TestCase):
+    """prose_units 직접 호출 — 보호 구간(헤딩·코드펜스·표)은 빼고 산문만 남긴다."""
+
+    def test_skips_protected_regions_keeps_prose(self):
+        slop_scan = _import_slop_scan()
+        text = (
+            "# 제목\n"
+            "```\n"
+            "코드 안 내용\n"
+            "```\n"
+            "| 표 | 행 |\n"
+            "- 불릿 항목\n"
+            "문단 텍스트다.\n"
+        )
+        units, evidence, fence_lines = slop_scan.prose_units(text)
+        self.assertEqual(fence_lines, {2, 3, 4}, "코드펜스 여닫는 줄과 내부 줄이 모두 잡혀야 한다")
+        self.assertIn("코드 안 내용", evidence, "펜스 안 내용은 근거 코퍼스에 들어가야 한다")
+        self.assertIn("| 표 | 행 |", evidence, "표 행은 근거 코퍼스에 들어가야 한다")
+        lines_map = {ln: t for ln, t in units}
+        self.assertNotIn(1, lines_map, "헤딩 줄은 산문에 없어야 한다")
+        self.assertNotIn(5, lines_map, "표 행은 산문에 없어야 한다")
+        self.assertEqual(lines_map.get(6, "").strip(), "불릿 항목", "불릿 마커는 벗겨지고 본문만 남아야 한다")
+        self.assertEqual(lines_map.get(7, "").strip(), "문단 텍스트다.")
+
+
+@unittest.skipIf(_script_missing_reason(), _script_missing_reason() or "")
+class TestSentencesUnit(unittest.TestCase):
+    """sentences 직접 호출 — 문장 분리와 원본 줄번호 귀속을 확인한다."""
+
+    def test_splits_sentences_and_attributes_source_line(self):
+        slop_scan = _import_slop_scan()
+        units = [(1, "첫 문장이다. 둘째 문장이다."), (2, "셋째 문장이다.")]
+        sents = slop_scan.sentences(units)
+        self.assertEqual(
+            [s["text"] for s in sents],
+            ["첫 문장이다.", "둘째 문장이다.", "셋째 문장이다."],
+        )
+        self.assertEqual([s["line"] for s in sents], [1, 1, 2])
 
 
 if __name__ == "__main__":
