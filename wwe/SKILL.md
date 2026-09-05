@@ -1,7 +1,7 @@
 ---
 name: wwe
 version: "1.4.0"
-description: 작업 디렉토리의 마크다운 문서(.md)에서 Claude·GPT가 남긴 티를 걷어내는 스킬. 두 축을 함께 잡는다 — (1) 문장 축은 humanize-korean 파이프라인(번역투·피동 남용·명사화 누적·결산 lexicon 70패턴)을 재사용하고, (2) 기존 taxonomy에 없는 문서 레이아웃 지문 축(볼드리드 불릿 `- **X**: 설명`, 상태 이모지 ✅⚠️, 서두 TL;DR 박스, 섹션마다 붙은 `---`, 마지막 "정리" 재진술 섹션, 강조용 인용블록, 표 남용·섹션 골격 균질성·삼분 편향)을 L1~L14 지표로 결정적으로 측정한다. 정책은 "장식만 제거, 구조는 보존" — 코드블록·frontmatter·표·링크·헤딩 텍스트·불릿 개수는 바이트 단위로 지킨다. 윤문하는 것도 Claude이므로 지문 점수를 윤문 전후로 기계 측정해 하락을 강제한다(지문 재생산 차단). 기본은 **경제 모드**(파일당 monolith LLM 1콜 상한 — 게이트가 문제를 잡아도 자동 재시도 대신 보류 목록에 기록하고 `정밀 모드`로만 해제)이고, 중단된 실행은 **이어서/재개**로 이미 낸 LLM 콜을 다시 지불하지 않고 이어간다. 여러 파일 일괄 처리, 대상 자동 분류(한글 비율·산문량·에이전트 지시 파일 회피), 삼중 게이트 검증, diff 미리보기 후 승인 적용까지 한 흐름. v1.3부터 작성자 반복 구절 검출과 시드 기반 제거를 지원한다 — `scripts/author_repeat.py`가 코퍼스·시드 파일로 반복 표현을 잡고, gen-block으로 윤문 지침에 주입해 같은 구절이 재생산되지 않도록 막는다. 트리거 — "wwe", "MD 문서 윤문", "마크다운 윤문", "README 윤문", "문서 AI 티 제거", "Claude 티 나는 문서", "AI가 쓴 게시물 티 제거", "docs 윤문", "이 디렉토리 문서 다듬어", "기술문서 자연스럽게", "humanize docs", "문서 번역투 제거", "AI 레이아웃 지문". 평문 텍스트 한 덩어리 윤문은 humanize-korean(/humanize), 문서 구조·내용 자체를 다시 쓰는 작업은 별도 집필 스킬.
+description: 작업 디렉토리의 마크다운 문서(.md)에서 Claude·GPT가 남긴 티를 걷어내는 스킬. 두 축을 함께 잡는다 — (1) 문장 축은 humanize-korean 파이프라인(번역투·피동 남용·명사화 누적·결산 lexicon 70패턴)을 재사용하고, (2) 기존 taxonomy에 없는 문서 레이아웃 지문 축(볼드리드 불릿 `- **X**: 설명`, 상태 이모지 ✅⚠️, 서두 TL;DR 박스, 섹션마다 붙은 `---`, 마지막 "정리" 재진술 섹션, 강조용 인용블록, 표 남용·섹션 골격 균질성·삼분 편향)을 L1~L14 지표로 결정적으로 측정한다. 정책은 "장식만 제거, 구조는 보존" — 코드블록·frontmatter·표·링크·헤딩 텍스트·불릿 개수는 바이트 단위로 지킨다. 윤문하는 것도 Claude이므로 지문 점수를 윤문 전후로 기계 측정해 하락을 강제한다(지문 재생산 차단). 기본은 **경제 모드**(파일당 monolith LLM 1콜 상한 — 게이트가 문제를 잡아도 자동 재시도 대신 보류 목록에 기록하고 `정밀 모드`로만 해제)이고, 중단된 실행은 **이어서/재개**로 이미 낸 LLM 콜을 다시 지불하지 않고 이어간다. 여러 파일 일괄 처리, 대상 자동 분류(한글 비율·산문량·에이전트 지시 파일 회피), 삼중 게이트 검증, diff 미리보기 후 승인 적용까지 한 흐름. v1.3부터 작성자 반복 구절 검출과 시드 기반 제거를 지원한다 — `scripts/author_repeat.py`가 코퍼스·시드 파일로 반복 표현을 잡고, gen-block으로 윤문 지침에 주입해 같은 구절이 재생산되지 않도록 막는다. v1.4부터 윤문 전 원문을 기준으로 초안 관문(게이트 S)을 돌려 확신·필러·미검증 세 항목을 판정해 보고만 하고 문장은 고치지 않으며, "슬롭 검사 빼줘"·"초안 관문 꺼줘"로 끌 수 있다. 트리거 — "wwe", "MD 문서 윤문", "마크다운 윤문", "README 윤문", "문서 AI 티 제거", "Claude 티 나는 문서", "AI가 쓴 게시물 티 제거", "docs 윤문", "이 디렉토리 문서 다듬어", "기술문서 자연스럽게", "humanize docs", "문서 번역투 제거", "AI 레이아웃 지문". 평문 텍스트 한 덩어리 윤문은 humanize-korean(/humanize), 문서 구조·내용 자체를 다시 쓰는 작업은 별도 집필 스킬.
 ---
 
 # wwe — 마크다운 문서 윤문 (v1.4)
@@ -495,6 +495,8 @@ echo "$CANDIDATE" > "$D/candidate.path"
 
 **정밀 모드에서만 판정자를 부른다.** `STRICT=1` 이고 `SLOP=1` 이면 `wwe-slop-judge` 를 `Agent` 도구로 호출한다. 스킵 가드는 `$D/11_slop_judge.json` 존재다 — 있으면 이전 라운드에서 이미 낸 콜이므로 생략하고 `재개: 11_slop_judge.json 존재 — judge 콜 생략` 을 로그로 남긴다. 경제 모드(`STRICT=0`, 기본)에서는 이 콜을 하지 않는다.
 
+**단, 이번 Phase 7 라운드가 게이트 B exit=1로 finalize를 부를 예정이면 이 호출은 지금 건너뛴다.** 판단 기준은 위에서 이미 구한 `GATE_B_EXIT`와 그 `golden` 배열이다(아래 게이트 B 절 셋째 조건 — `HEADING_EDIT=1`의 heading 예외에도, warn 수준의 `entity_lost`/`number_dropped` 만으로도 해당하지 않는 golden 실패가 섞여 있을 때). finalize는 `final.md`를 다시 쓰므로 지금 이 candidate를 판정해 봐야 그 결과는 finalize 뒤 폐기된다 — 판정자를 한 파일에 두 번 부르지 않으려면 finalize가 정착된 뒤 한 번만 불러야 한다. 이 조건에 해당하면 판정자를 부르지 않고 진행하며, finalize 뒤 다시 도는 Phase 6~7의 이 자리에서(그 라운드는 이 조건이 더 이상 해당하지 않을 것이므로) 정착된 candidate를 대상으로 정확히 한 번 부른다.
+
 호출 직전에 `cat "$D/candidate.path"` 를 한 번 돌려 candidate 절대경로를 읽어 둔다. Agent 도구 호출은 셸 명령이 아니라 셸 변수가 넘어가지 않으므로, 아래 네 자리에는 **그때 확인한 절대경로 문자열을 그대로 채워 넣는다**(Phase 5의 `quick_rules_path` 를 채우는 방식과 같다).
 
 - 원본: `{원본경로}`
@@ -563,7 +565,7 @@ fi
 
 - **`HEADING_EDIT=1`이고 `golden` 배열의 `code`가 전부 `heading_lost`·`heading_absorbed`뿐이면** — 사용자가 요청한 헤딩 편집의 필연적 결과다. `verify_gates.py`의 golden 체크(`tests/golden/checks.py`)는 원본 헤딩 줄이 출력에 **문자 그대로** 남아 있어야 통과하는데, 헤딩 편집 옵션의 존재 이유 자체가 그 텍스트를 바꾸는 것이므로(콜론 부제 압축 등) 이 옵션이 켜진 순간 이 체크는 구조적으로 통과할 수 없다. finalize 승급 사유에서 제외하고 exit 0으로 취급한다 — 게이트 D는 헤딩의 **앵커 무결성**만 전담할 뿐 헤딩 *내용*이 원래 의도를 벗어났는지는 자동으로 잡지 않으므로(게이트 A를 restored.md로 돌리는 것과 같은 이유: 헤딩이 실제로 바뀌는 축은 그 축을 전담하는 게이트로 넘기고, 헤딩 불변을 전제하는 게이트에는 헤딩 원문 유지본을 태우거나 그 실패를 면제한다), 이 예외가 발동하면 헤딩 before→after 쌍을 Phase 9 보고서(경고 고지 항목)에 반드시 나열해 사람이 diff에서 직접 확인하게 한다.
 - **`code`가 `entity_lost`·`number_dropped`만이면** (보존 게이트 warn 수준) — 소실은 축약(`CONDENSE` 모드)의 정상 부산물일 수 있다. finalize 승급 없이 현재 결과를 그대로 채택하되, 소실 항목 목록을 Phase 9 경고 고지에 나열해 사람이 직접 확인하게 한다. `$D/pending.txt`에 `gate=B exit=1 action=none reason=보존 warn(entity_lost/number_dropped)` 를 기록해 보류 목록에 사유만 표시한다(`action=none`이므로 `보류 재시도` 선택지에서는 제외된다).
-- **`code`에 다른 golden 실패가 하나라도 섞여 있으면**(`cliche_injection`·`colloquial_erased`·`empty_output`·`entity_lost`·`footnote_anchor`·`footnote_count`·`footnote_def`·`footnote_numbers`·`hayeot_injection`·`number_dropped`·`number_injected`·`quote_altered` 등 — `entity_lost`·`number_dropped`는 warn 수준이지만 다른 fail 코드와 섞이면 이 경로로 처리한다) — **경제 모드(기본, `STRICT=0`)**: `humanize-finalizer`를 추가로 부르지 않는다. 게이트 B exit 1은 원래도 "경고+승급"이지 "채택 금지"가 아니었으므로, 지금 결과(`$CANDIDATE`)를 그대로 diff·적용 대상으로 살려 사용자가 그대로 채택할 수 있게 둔다. 대신 `$D/pending.txt`에 한 줄을 남긴다 — **실행 시점은 게이트 스크립트 블록이 끝난 직후, Phase 8로 넘어가기 전이다**(Phase 6a의 `rm -f`는 이미 지나갔으므로 여기서 남기면 지워지지 않는다): `D="$PWD/_workspace/docs-{run_id}/{slug}"; echo "gate=B exit=1 action=finalize reason=<golden 실패 코드 요약>" >> "$D/pending.txt"`를 직접 실행해 기록한다(golden 판독을 게이트 스크립트와 별도 Bash 호출로 했다면 새 셸이므로 `$D` 재선언이 필수다). Phase 9 보류 목록에 **보류-권장**으로 올린다. **정밀 모드(`STRICT=1`)**: 기존대로 `humanize-finalizer`를 1콜 추가한다 — 단 입력은 **마스킹된 산문**(`01_input.txt` ↔ `final.md`)이지 복원본이 아니다. `$D/09_finalize.json`이 이미 있으면(재개 상황) 이 콜을 생략하고 기존 산출물을 재사용한다 — 단 이 가드는 **지금의 `final.md`를 판정한 09_finalize.json에만** 유효하다(그 사이 final.md가 다른 재시도로 갱신됐다면 가드를 신뢰하지 말고 09_finalize.json도 함께 지운 뒤 다시 호출한다 — Phase 5 절 참고). finalize 호출 전에 `rm -f "$D/11_slop_judge.json"`도 실행한다 — finalizer가 final.md를 다시 쓰므로 남아 있던 judge 판정은 지금 나올 candidate가 아니라 이전 candidate에 대한 것이다. finalize 후 Phase 6~7을 다시 돌린다.
+- **`code`에 다른 golden 실패가 하나라도 섞여 있으면**(`cliche_injection`·`colloquial_erased`·`empty_output`·`entity_lost`·`footnote_anchor`·`footnote_count`·`footnote_def`·`footnote_numbers`·`hayeot_injection`·`number_dropped`·`number_injected`·`quote_altered` 등 — `entity_lost`·`number_dropped`는 warn 수준이지만 다른 fail 코드와 섞이면 이 경로로 처리한다) — **경제 모드(기본, `STRICT=0`)**: `humanize-finalizer`를 추가로 부르지 않는다. 게이트 B exit 1은 원래도 "경고+승급"이지 "채택 금지"가 아니었으므로, 지금 결과(`$CANDIDATE`)를 그대로 diff·적용 대상으로 살려 사용자가 그대로 채택할 수 있게 둔다. 대신 `$D/pending.txt`에 한 줄을 남긴다 — **실행 시점은 게이트 스크립트 블록이 끝난 직후, Phase 8로 넘어가기 전이다**(Phase 6a의 `rm -f`는 이미 지나갔으므로 여기서 남기면 지워지지 않는다): `D="$PWD/_workspace/docs-{run_id}/{slug}"; echo "gate=B exit=1 action=finalize reason=<golden 실패 코드 요약>" >> "$D/pending.txt"`를 직접 실행해 기록한다(golden 판독을 게이트 스크립트와 별도 Bash 호출로 했다면 새 셸이므로 `$D` 재선언이 필수다). Phase 9 보류 목록에 **보류-권장**으로 올린다. **정밀 모드(`STRICT=1`)**: 기존대로 `humanize-finalizer`를 1콜 추가한다 — 단 입력은 **마스킹된 산문**(`01_input.txt` ↔ `final.md`)이지 복원본이 아니다. `$D/09_finalize.json`이 이미 있으면(재개 상황) 이 콜을 생략하고 기존 산출물을 재사용한다 — 단 이 가드는 **지금의 `final.md`를 판정한 09_finalize.json에만** 유효하다(그 사이 final.md가 다른 재시도로 갱신됐다면 가드를 신뢰하지 말고 09_finalize.json도 함께 지운 뒤 다시 호출한다 — Phase 5 절 참고). finalize 호출 전에 `rm -f "$D/11_slop_judge.json"`도 실행한다 — 위 초안 관문 절의 가드가 이 조건에서는 애초에 판정자를 부르지 않으므로 보통 지울 파일이 없지만, 이전 재시도의 잔재가 남아 있을 수 있어 방어적으로 지운다. finalize 후 Phase 6~7을 다시 돌린다 — 초안 관문의 judge 호출은 이 조건이 이번에는 해당하지 않을(finalize로 정착된) candidate를 대상으로, 이 재실행에서 정확히 한 번만 일어난다.
 - exit 2(강제 중단·롤백)는 원래도 추가 콜 없이 원본 유지다 — 이건 STRICT 여부와 무관하게 동일하다(위 Phase 7 스크립트가 exit 2를 감지하면 자동으로 `$D/pending.txt`에 `gate=B exit=2 action=none reason=과윤문 강제중단, 추가 콜 없음(수동 확인 권장)`을 남긴다). `action=none`은 자동 재시도할 액션이 없다는 뜻이라 `보류 재시도`의 선택 목록에는 사유만 표시되고 선택지에서는 제외된다.
 - `HEADING_EDIT=0`이면 이 예외는 적용하지 않는다 — 그 경우 헤딩 텍스트는 애초에 불변이어야 하므로 `heading_lost`/`heading_absorbed`가 떴다는 것 자체가 진짜 실패(윤문이 의도치 않게 헤딩을 건드렸다는 뜻)다.
 - 이 예외는 **golden 축(P3)에만** 적용된다. `--json`의 `change_rate`(P0)·`s1_targets`(P1)·`antithesis`(P2) 중 하나라도 별도로 경고 상태면(각 축의 verdict 문자열이 OK/스킵/N/A가 아니면 경고; `s1_targets`는 배열이므로 항목 중 하나라도 과교정·미달이면 경고), golden이 완전히 면제되어도 그 이유만으로 exit 1은 그대로 유지되고 위 "`code`에 다른 golden 실패가 섞여 있으면" 항목과 동일한 승급 처리(경제 모드는 보류 기록, 정밀 모드는 finalize 호출)가 그대로 적용된다 — 헤딩 편집이 golden의 heading_lost/heading_absorbed를 정당화할 뿐, 다른 축의 문제까지 덮어주지는 않는다.
@@ -658,9 +660,19 @@ if llm is None:
     print(f"  (LLM 판정 누락 — {note})" if note else "  (LLM 판정 누락)")
 # LLM 층의 유래는 compare 가 기계로 매긴다. origin_method 가 none 이면 "원문에서 못 찾았다"
 # 이지 "윤문이 심었다"의 확증이 아니므로, 결정적 행의 확정 `윤문` 과 구분해 `윤문?` 로 찍는다.
-rows = [(f.get("item", "?"), None,
-         "윤문?" if f.get("origin_method") == "none" else f.get("origin", "원문"),
-         f.get("quote", ""), f.get("why", ""))
+# quote 가 비어 대조 자체를 안 한 항목은 origin_method 가 아예 없다 — 이때 모델이 준 origin
+# 을 그대로 찍으면 검증 안 된 값이 검증된 것처럼 읽힌다. `{origin}?` 로 찍어 미검증임을 남긴다.
+def _origin_label(f: dict) -> str:
+    method = f.get("origin_method")
+    origin = f.get("origin", "원문")
+    if method in ("verbatim", "fuzzy"):
+        return origin
+    if method == "none":
+        return "윤문?"
+    return f"{origin}?"
+
+
+rows = [(f.get("item", "?"), None, _origin_label(f), f.get("quote", ""), f.get("why", ""))
         for f in findings[:3]]
 label = {"S1": "확신", "S2": "필러", "S3": "미검증"}
 introduced_keys = {(i.get("id"), i.get("term"), i.get("line"))
@@ -680,7 +692,7 @@ diff -u "{원본경로}" "$CANDIDATE" | head -120
 diff <(grep -c '' "{원본경로}") <(grep -c '' "$CANDIDATE")
 ```
 
-초안 관문 표를 읽을 때 유래 라벨 둘을 섞지 않는다. LLM 층의 `윤문?` 는 발췌를 원문에서 못 찾았다는 뜻이고(윤문이 심었다는 확증이 아님), 결정적 행의 `윤문` 은 윤문이 그 용어를 들여왔다는 뜻이다.
+초안 관문 표를 읽을 때 유래 라벨 둘을 섞지 않는다. LLM 층의 `윤문?` 는 발췌를 원문에서 못 찾았다는 뜻이고(윤문이 심었다는 확증이 아님), `원문?`/`윤문?` 처럼 물음표가 붙은 값은 quote 가 비어 대조 자체를 안 해 모델이 준 값을 검증 없이 그대로 옮긴 것이며, 결정적 행의 `윤문` 은 윤문이 그 용어를 들여왔다는 뜻이다.
 
 diff와 파일별 요약을 보여준 뒤 AskUserQuestion으로 적용 방식을 고른다.
 
@@ -709,7 +721,7 @@ git 저장소면 `git status --short`로 해당 파일이 이미 dirty한지 확
 3. **걷어낸 레이아웃 지문**: 파일별로 어떤 L 패턴을 몇 건 제거했는지 (볼드리드 불릿 7건, 상태 이모지 12개, 마무리 요약 섹션 1개 …)
 4. **남은 지문 (수정 안 함)**: report-only 축에서 발동 중인 것 — 표 밀도, 섹션 골격 균질성, 삼분 편향 등. 구조를 바꿔야 고쳐지므로 사람이 판단할 몫이라고 명시한다
 
-    **4b. 초안 관문 (수정 안 함)**: `SLOP=1`일 때만. 각 `{slug}/11_slop.json`을 읽어 파일별로 확신·필러·미검증 건수, 윤문 유입 건수, 상위 발췌 3건(LLM 판정 우선, 모자라면 결정적 층 히트로 채움)을 싣는다. 마지막에 "이 게이트는 고치지 않는다. 표면 윤문으로는 슬롭이 글이 되지 않는다는 게 이 항목의 전제다" 한 줄과 출처 링크(https://ahrefs.com/blog/how-we-use-ai-without-making-ai-slop/)를 붙인다. **실행 여부는 파일 존재가 아니라 `summary` 키로 판정한다**(Phase 8과 같은 기준 — Phase 6의 `extract-llm`은 monolith가 블록을 안 내도 이 파일을 만들므로 파일 존재는 증거가 아니다): `summary`가 없으면 그 파일은 "초안 관문 미실행 (compare 실패)"으로 적고 건수 표는 생략한다. `summary`는 있는데 `llm`이 `null`이면 "LLM 판정 누락"으로 적고, 최상위 `note`가 있으면 그 사유(`HUMANIZE-SUMMARY 블록 없음` / `slop_findings 키 없음`)를 괄호에 그대로 옮긴다. `SLOP=0`이면 이 항목 대신 "초안 관문: 꺼짐" 한 줄만 남긴다. 유래 라벨 둘은 섞지 않는다 — LLM 층의 `윤문?` 는 발췌를 원문에서 못 찾았다는 뜻이고(윤문이 심었다는 확증이 아님), 결정적 행의 `윤문` 은 윤문이 그 용어를 들여왔다는 뜻이다
+    **4b. 초안 관문 (수정 안 함)**: `SLOP=1`일 때만. 각 `{slug}/11_slop.json`을 읽어 파일별로 확신·필러·미검증 건수, 윤문 유입 건수, 상위 발췌 3건(LLM 판정 우선, 모자라면 결정적 층 히트로 채움)을 싣는다. 마지막에 "이 게이트는 고치지 않는다. 표면 윤문으로는 슬롭이 글이 되지 않는다는 게 이 항목의 전제다" 한 줄과 출처 링크(https://ahrefs.com/blog/how-we-use-ai-without-making-ai-slop/)를 붙인다. **실행 여부는 파일 존재가 아니라 `summary` 키로 판정한다**(Phase 8과 같은 기준 — Phase 6의 `extract-llm`은 monolith가 블록을 안 내도 이 파일을 만들므로 파일 존재는 증거가 아니다): `summary`가 없으면 그 파일은 "초안 관문 미실행 (compare 실패)"으로 적고 건수 표는 생략한다. `summary`는 있는데 `llm`이 `null`이면 "LLM 판정 누락"으로 적고, 최상위 `note`가 있으면 그 사유(`HUMANIZE-SUMMARY 블록 없음` / `slop_findings 키 없음`)를 괄호에 그대로 옮긴다. `SLOP=0`이면 이 항목 대신 "초안 관문: 꺼짐" 한 줄만 남긴다. 유래 라벨 둘은 섞지 않는다 — LLM 층의 `윤문?` 는 발췌를 원문에서 못 찾았다는 뜻이고(윤문이 심었다는 확증이 아님), `원문?`/`윤문?` 처럼 물음표가 붙은 값은 quote 가 비어 대조를 안 해 모델이 준 값을 검증 없이 그대로 옮긴 것이며, 결정적 행의 `윤문` 은 윤문이 그 용어를 들여왔다는 뜻이다
 5. 채택 실패 파일과 그 사유
 6. **보류 목록**: 파일별로 (게이트, 사유, 권장 다음 행동: 재윤문/finalize, 예상 추가 LLM 콜 수 — 기본 1회, 정밀 모드에서 초안 관문이 켜져 있으면 judge 1회가 더 붙어 최대 2회). 각 `{slug}/pending.txt`를 모아 만든다(`action=none` 항목은 재시도 불가로 표시). `보류 재시도`로 이 목록에서 선택 실행할 수 있다고 안내를 붙인다
 7. 주요 문장 변경 하이라이트 3~5건 (before → after 한 줄씩)
