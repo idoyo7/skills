@@ -322,18 +322,36 @@ S3_VALUE_SCALE = 5.0
 
 _NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
 
-# lexicon 의 [S3_evidence] 에 더해, 문단 안에 "확인하러 갈 곳"이 이미 있으면 근거로 본다.
-# 인라인 코드·링크·URL·⟦HZ-…⟧ 토큰(마스킹된 코드·표·링크 자리)·파일명·절대경로가 그것이다.
-# 파일명·경로를 넣은 이유는 human_02_reference.md 의 `85%` 오탐이다 — 같은 문단이
-# disk-usage-alert.sh 라고 이름을 대고 있으면 그 수치는 스크립트를 열어 확인할 수 있다.
-_INLINE_EVIDENCE_RE = re.compile(
+# 근거 표지는 "확인하러 갈 곳"이 어디 있는지에 따라 판정 범위가 갈린다(설계 스펙 §2-1).
+#
+# 인라인 코드·마크다운 링크·URL·⟦HZ-…⟧ 토큰(마스킹된 코드·표·링크 자리)은 "같은 문장에"
+# 있을 때만 근거로 본다 — 문단이 길면 그중 한 문장에 링크가 있다고 다른 문장의 주장까지
+# 덩달아 면제되면 안 된다("대부분의 팀이 40% 이상 비용을 절감했다. 배포 방식은
+# `docker compose up` 명령을 쓴다." 같은 문단에서 앞 문장은 여전히 미검증이어야 한다).
+_SENTENCE_EVIDENCE_RE = re.compile(
     r"`[^`]+`"                                   # 인라인 코드
     r"|\[[^\]]*\]\([^)]*\)"                      # 마크다운 링크
     r"|https?://"                                # URL
     r"|⟦HZ-[^⟧]*⟧"                               # 마스킹 토큰(코드·표·링크가 있던 자리)
-    r"|[\w.-]+\.(?:sh|py|js|ts|go|rs|java|rb|md|json|ya?ml|toml|ini|conf|cfg|txt|sql|csv)\b"
+)
+
+# 파일명·절대경로는 "같은 문단 안"이면 근거로 본다 — human_02_reference.md 의 `85%` 오탐
+# 때문에 넣었다. disk-usage-alert.sh 라고 같은 문단(다른 문장이어도)이 이름을 대고 있으면
+# 그 수치는 스크립트를 열어 확인할 수 있어, 문장 단위로 좁힐 이유가 없다.
+_PARA_EVIDENCE_RE = re.compile(
+    r"[\w.-]+\.(?:sh|py|js|ts|go|rs|java|rb|md|json|ya?ml|toml|ini|conf|cfg|txt|sql|csv)\b"
     r"|(?<![\w/])/[\w.@-]+(?:/[\w.@-]+)+"        # 절대경로
 )
+
+
+def _number_in_corpus(n: str, evidence_corpus: str) -> bool:
+    """수치 n 이 근거 코퍼스에 '토큰 전체로' 나오는지 본다.
+
+    부분 문자열 매치(`in`)는 `30명` 을 표의 `130명` 으로 면제해버린다 — 앞뒤가
+    숫자/소수점이 아닌 경계에서만 매치되게 lookaround 로 못박는다.
+    """
+    pattern = r"(?<![\d.])" + re.escape(n) + r"(?![\d.])"
+    return re.search(pattern, evidence_corpus) is not None
 
 
 def _fence_adjacent_paras(sents: list[dict], fence_lines: set[int]) -> set[int]:
@@ -358,12 +376,12 @@ def m_S3(sents: list[dict], lex: dict, evidence_corpus: str, fence_paras: set[in
 
     for para, group in by_para.items():
         para_text = " ".join(s["text"] for s in group)
-        has_evidence = (
+        has_para_evidence = (
             para in fence_paras
-            or _INLINE_EVIDENCE_RE.search(para_text) is not None
+            or _PARA_EVIDENCE_RE.search(para_text) is not None
             or any(item["re"].search(para_text) for item in lex.get("S3_evidence", []))
         )
-        if has_evidence:
+        if has_para_evidence:
             continue
         for s in group:
             term = None
@@ -373,8 +391,11 @@ def m_S3(sents: list[dict], lex: dict, evidence_corpus: str, fence_paras: set[in
                     break
             if term is None:
                 continue
+            if _SENTENCE_EVIDENCE_RE.search(s["text"]) is not None:
+                # 같은 문장 안에 인라인 코드·링크·URL·HZ 토큰이 있으면 근거로 본다.
+                continue
             nums = _NUMBER_RE.findall(s["text"])
-            if nums and all(n in evidence_corpus for n in nums):
+            if nums and all(_number_in_corpus(n, evidence_corpus) for n in nums):
                 # 문서 차원 예외 — 같은 수치가 표나 코드 블록에 있으면 근거 있음으로 본다.
                 continue
             hits.append({"id": "S3", "term": term, "line": s["line"], "quote": s["text"][:80]})
