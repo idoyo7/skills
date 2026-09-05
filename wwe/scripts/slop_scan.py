@@ -524,6 +524,77 @@ def parse_slop_findings(block: str) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
+# 6c. 유래 판정 — 항목별 용어 카운트 차집합
+# ---------------------------------------------------------------------------
+
+ITEM_LABEL = {"S1": "확신", "S2": "필러", "S3": "미검증"}
+
+
+def term_counts(hits: list[dict]) -> dict[tuple[str, str], int]:
+    counts: dict[tuple[str, str], int] = {}
+    for h in hits:
+        key = (h["id"], h["term"])
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def diff_terms(before_hits: list[dict], after_hits: list[dict]) -> tuple[list[dict], list[dict]]:
+    """문장이 바뀌면 문장 단위 대조가 깨지므로 용어 카운트로 유래를 정한다."""
+    before = term_counts(before_hits)
+    after = term_counts(after_hits)
+    introduced: list[dict] = []
+    resolved: list[dict] = []
+    for key, n_after in after.items():
+        delta = n_after - before.get(key, 0)
+        if delta <= 0:
+            continue
+        picked = [h for h in after_hits if (h["id"], h["term"]) == key][-delta:]
+        for h in picked:
+            introduced.append({
+                "id": h["id"], "term": h["term"], "line": h["line"],
+                "quote": h["quote"], "origin": "윤문",
+            })
+    for key, n_before in before.items():
+        delta = n_before - after.get(key, 0)
+        if delta > 0:
+            resolved.append({"id": key[0], "term": key[1], "count": delta})
+    introduced.sort(key=lambda x: (x["id"], x["line"]))
+    resolved.sort(key=lambda x: (x["id"], x["term"]))
+    return introduced, resolved
+
+
+def merge_llm(llm_monolith: dict | None, judge: dict | None) -> dict | None:
+    """judge 결과가 있으면 그것이 llm 이고, 없으면 monolith 복사본, 둘 다 없으면 null."""
+    if judge is not None and not judge.get("error"):
+        return judge
+    if llm_monolith is not None and not llm_monolith.get("error"):
+        return dict(llm_monolith)
+    return None
+
+
+def build_pending_line(summary: dict, triggered: list[str]) -> str | None:
+    if not triggered:
+        return None
+    return (
+        "gate=S exit=1 action=none reason=초안 관문: "
+        f"확신 {summary['S1']}·필러 {summary['S2']}·미검증 {summary['S3']}"
+        f" (윤문 유입 {summary['introduced']})"
+    )
+
+
+def _load_json(path: str | None) -> dict | None:
+    if not path:
+        return None
+    p = Path(path)
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+# ---------------------------------------------------------------------------
 # 7. CLI
 # ---------------------------------------------------------------------------
 
@@ -602,7 +673,73 @@ def cmd_extract_llm(args: argparse.Namespace) -> int:
 
 
 def cmd_compare(args: argparse.Namespace) -> int:
-    print("compare: 미구현")
+    out_path = args.out or args.llm
+    if not out_path:
+        print("초안 관문: --out 도 --llm 도 없어 쓸 곳이 없다 — 건너뜀")
+        return 0
+
+    lex = load_lexicon(args.lexicon)
+    if lex is None:
+        print(f"초안 관문: lexicon 파일 없음 — 대조 건너뜀 ({args.lexicon})")
+        return 0
+
+    before_text = read_text(args.before)
+    after_text = read_text(args.after)
+    if before_text is None or after_text is None:
+        return 0
+
+    before_scan = scan_text(before_text, lex)
+    after_scan = scan_text(after_text, lex)
+    introduced, resolved = diff_terms(before_scan["hits"], after_scan["hits"])
+
+    prev = _load_json(args.llm) or {}
+    llm_monolith = prev.get("llm_monolith")
+    judge = _load_json(args.judge)
+    llm = merge_llm(llm_monolith, judge)
+
+    counts = {"S1": 0, "S2": 0, "S3": 0}
+    for h in after_scan["hits"]:
+        counts[h["id"]] = counts.get(h["id"], 0) + 1
+    summary = {
+        "S1": counts["S1"], "S2": counts["S2"], "S3": counts["S3"],
+        "introduced": len(introduced),
+        "llm_findings": len((llm or {}).get("findings", [])),
+    }
+    triggered = [m["id"] for m in after_scan["metrics"] if m["triggered"]]
+
+    source = dict(prev.get("source") or {})
+    source["before"] = args.before
+    source["after"] = args.after
+    source.setdefault("final", None)
+    payload: dict = {
+        "version": 1,
+        "source": {"before": source["before"], "after": source["after"], "final": source["final"]},
+        "scan": {
+            "before": before_scan,
+            "after": after_scan,
+            "introduced": introduced,
+            "resolved": resolved,
+        },
+        "llm": llm,
+        "llm_monolith": llm_monolith,
+        "summary": summary,
+    }
+    # extract-llm 이 남긴 누락 사유는 그대로 이어 나른다 — Phase 9가 "LLM 판정 누락"에 쓴다.
+    if prev.get("note"):
+        payload["note"] = prev["note"]
+    Path(out_path).write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    line = build_pending_line(summary, triggered)
+    if line:
+        if args.pending:
+            with open(args.pending, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        else:
+            print(line)
+    print(
+        f"초안 관문: 확신 {summary['S1']} · 필러 {summary['S2']} · 미검증 {summary['S3']}"
+        f" | 윤문 유입 {summary['introduced']} | LLM 판정 {summary['llm_findings']}건 → {out_path}"
+    )
     return 0
 
 
