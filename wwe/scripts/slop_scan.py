@@ -314,17 +314,91 @@ def m_S2(sents: list[dict], lex: dict) -> tuple[dict, list[dict]]:
 
 
 # ---------------------------------------------------------------------------
-# 5c. 집계 — 지표는 Task 2~4 가 하나씩 채운다
+# 5b-3. 지표 S3 — 미검증 사례
+# ---------------------------------------------------------------------------
+
+S3_TRIGGER_HITS = 1
+S3_VALUE_SCALE = 5.0
+
+_NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
+
+# lexicon 의 [S3_evidence] 에 더해, 문단 안에 "확인하러 갈 곳"이 이미 있으면 근거로 본다.
+# 인라인 코드·링크·URL·⟦HZ-…⟧ 토큰(마스킹된 코드·표·링크 자리)·파일명·절대경로가 그것이다.
+# 파일명·경로를 넣은 이유는 human_02_reference.md 의 `85%` 오탐이다 — 같은 문단이
+# disk-usage-alert.sh 라고 이름을 대고 있으면 그 수치는 스크립트를 열어 확인할 수 있다.
+_INLINE_EVIDENCE_RE = re.compile(
+    r"`[^`]+`"                                   # 인라인 코드
+    r"|\[[^\]]*\]\([^)]*\)"                      # 마크다운 링크
+    r"|https?://"                                # URL
+    r"|⟦HZ-[^⟧]*⟧"                               # 마스킹 토큰(코드·표·링크가 있던 자리)
+    r"|[\w.-]+\.(?:sh|py|js|ts|go|rs|java|rb|md|json|ya?ml|toml|ini|conf|cfg|txt|sql|csv)\b"
+    r"|(?<![\w/])/[\w.@-]+(?:/[\w.@-]+)+"        # 절대경로
+)
+
+
+def _fence_adjacent_paras(sents: list[dict], fence_lines: set[int]) -> set[int]:
+    """코드펜스 바로 앞뒤 문단은 근거가 붙은 것으로 본다(설계 스펙 §2-1)."""
+    ranges: dict[int, tuple[int, int]] = {}
+    for s in sents:
+        lo, hi = ranges.get(s["para"], (s["line"], s["line"]))
+        ranges[s["para"]] = (min(lo, s["line"]), max(hi, s["line"]))
+    out: set[int] = set()
+    for para, (lo, hi) in ranges.items():
+        probes = list(range(lo - 2, lo)) + list(range(hi + 1, hi + 3))
+        if any(p in fence_lines for p in probes):
+            out.add(para)
+    return out
+
+
+def m_S3(sents: list[dict], lex: dict, evidence_corpus: str, fence_paras: set[int]) -> tuple[dict, list[dict]]:
+    hits: list[dict] = []
+    by_para: dict[int, list[dict]] = {}
+    for s in sents:
+        by_para.setdefault(s["para"], []).append(s)
+
+    for para, group in by_para.items():
+        para_text = " ".join(s["text"] for s in group)
+        has_evidence = (
+            para in fence_paras
+            or _INLINE_EVIDENCE_RE.search(para_text) is not None
+            or any(item["re"].search(para_text) for item in lex.get("S3_evidence", []))
+        )
+        if has_evidence:
+            continue
+        for s in group:
+            term = None
+            for item in lex.get("S3_claim", []):
+                if item["re"].search(s["text"]):
+                    term = item["term"]
+                    break
+            if term is None:
+                continue
+            nums = _NUMBER_RE.findall(s["text"])
+            if nums and all(n in evidence_corpus for n in nums):
+                # 문서 차원 예외 — 같은 수치가 표나 코드 블록에 있으면 근거 있음으로 본다.
+                continue
+            hits.append({"id": "S3", "term": term, "line": s["line"], "quote": s["text"][:80]})
+
+    triggered = len(hits) >= S3_TRIGGER_HITS
+    value = min(1.0, len(hits) / S3_VALUE_SCALE)
+    note = f"근거 없는 주장 {len(hits)}건 (임계 {S3_TRIGGER_HITS}건)"
+    raw = {"hits": len(hits)}
+    return metric("S3", "미검증 사례", "report", raw, value, triggered, note), hits
+
+
+# ---------------------------------------------------------------------------
+# 5c. 집계
 # ---------------------------------------------------------------------------
 
 
 def scan_text(text: str, lex: dict) -> dict:
-    units, _evidence, _fence_lines = prose_units(text)
+    units, evidence_corpus, fence_lines = prose_units(text)
     sents = sentences(units)
     nonspace = sum(len(re.sub(r"\s", "", t)) for _, t in units)
     m1, h1 = m_S1(sents, lex, nonspace)
     m2, h2 = m_S2(sents, lex)
-    return {"metrics": [m1, m2], "hits": list(h1) + list(h2)}
+    m3, h3 = m_S3(sents, lex, evidence_corpus, _fence_adjacent_paras(sents, fence_lines))
+    return {"metrics": [m1, m2, m3], "hits": list(h1) + list(h2) + list(h3)}
 
 
 # ---------------------------------------------------------------------------

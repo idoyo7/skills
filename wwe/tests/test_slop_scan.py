@@ -192,7 +192,7 @@ class TestSentencesUnit(unittest.TestCase):
 class TestFixtureExpectations(unittest.TestCase):
     """픽스처마다 expected/*.json 의 발동 목록·히트 하한·히트 상한을 검증한다."""
 
-    FIXTURES: list[str] = ["s1_certainty", "clean", "s2_filler"]
+    FIXTURES: list[str] = ["s1_certainty", "clean", "s2_filler", "s3_unsourced", "s3_sourced"]
 
     def test_fixtures_match_expected(self):
         for name in self.FIXTURES:
@@ -232,6 +232,36 @@ class TestFixtureExpectations(unittest.TestCase):
                 self.assertIn(key, h)
             self.assertGreater(h["line"], 0)
             self.assertLessEqual(len(h["quote"]), 80)
+
+
+@unittest.skipIf(_script_missing_reason(), _script_missing_reason() or "")
+class TestScanContract(unittest.TestCase):
+    """scan 서브커맨드의 출력 계약."""
+
+    def test_metrics_are_s1_s2_s3_in_order(self):
+        rc, data = scan_json(CORPUS_DIR / "s1_certainty.md")
+        self.assertEqual(rc, 0)
+        self.assertEqual([m["id"] for m in data["metrics"]], ["S1", "S2", "S3"])
+
+    def test_json_top_level_key_order(self):
+        rc, data = scan_json(CORPUS_DIR / "clean.md")
+        self.assertEqual(rc, 0)
+        self.assertEqual(list(data.keys()), ["file", "metrics", "hits", "triggered"])
+
+    def test_human_table_without_json_flag(self):
+        r = run_slop(["scan", "--src", str(CORPUS_DIR / "s1_certainty.md")])
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("초안 관문", r.stdout)
+        self.assertIn("발동된 초안 관문 항목", r.stdout)
+        self.assertNotIn('"metrics"', r.stdout, "--json 없이는 JSON 줄이 없어야 한다")
+
+    def test_missing_lexicon_skips_quietly(self):
+        r = run_slop([
+            "scan", "--src", str(CORPUS_DIR / "clean.md"),
+            "--lexicon", str(CORPUS_DIR / "__no_lexicon__.txt"),
+        ])
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("lexicon 파일 없음", r.stdout)
 
 
 if __name__ == "__main__":
