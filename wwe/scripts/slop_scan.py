@@ -232,14 +232,41 @@ def metric(id_: str, label: str, kind: str, raw: dict, value: float, triggered: 
 
 
 # ---------------------------------------------------------------------------
+# 5b. 지표 S1 — 확신 표지
+# ---------------------------------------------------------------------------
+
+S1_TRIGGER_DENSITY = 3.0     # 히트/1000자(공백 제외)
+S1_VALUE_SCALE = 6.0
+
+
+def m_S1(sents: list[dict], lex: dict, nonspace: int) -> tuple[dict, list[dict]]:
+    hits: list[dict] = []
+    for s in sents:
+        for item in lex.get("S1_certainty", []):
+            for _ in item["re"].finditer(s["text"]):
+                hits.append({"id": "S1", "term": item["term"], "line": s["line"], "quote": s["text"][:80]})
+    density = (len(hits) / nonspace * 1000.0) if nonspace else 0.0
+    triggered = density >= S1_TRIGGER_DENSITY
+    value = min(1.0, density / S1_VALUE_SCALE)
+    note = (
+        f"확신 표지 {len(hits)}건 / 공백제외 {nonspace}자 → 밀도 {density:.2f}"
+        f" (임계 {S1_TRIGGER_DENSITY})"
+    )
+    raw = {"hits": len(hits), "chars": nonspace, "density": round(density, 3)}
+    return metric("S1", "확신 표지", "report", raw, value, triggered, note), hits
+
+
+# ---------------------------------------------------------------------------
 # 5c. 집계 — 지표는 Task 2~4 가 하나씩 채운다
 # ---------------------------------------------------------------------------
 
 
 def scan_text(text: str, lex: dict) -> dict:
     units, _evidence, _fence_lines = prose_units(text)
-    _sents = sentences(units)
-    return {"metrics": [], "hits": []}
+    sents = sentences(units)
+    nonspace = sum(len(re.sub(r"\s", "", t)) for _, t in units)
+    m1, h1 = m_S1(sents, lex, nonspace)
+    return {"metrics": [m1], "hits": list(h1)}
 
 
 # ---------------------------------------------------------------------------
