@@ -656,7 +656,11 @@ print(
 if llm is None:
     note = d.get("note")
     print(f"  (LLM 판정 누락 — {note})" if note else "  (LLM 판정 누락)")
-rows = [(f.get("item", "?"), None, f.get("origin", "원문"), f.get("quote", ""), f.get("why", ""))
+# LLM 층의 유래는 compare 가 기계로 매긴다. origin_method 가 none 이면 "원문에서 못 찾았다"
+# 이지 "윤문이 심었다"의 확증이 아니므로, 결정적 행의 확정 `윤문` 과 구분해 `윤문?` 로 찍는다.
+rows = [(f.get("item", "?"), None,
+         "윤문?" if f.get("origin_method") == "none" else f.get("origin", "원문"),
+         f.get("quote", ""), f.get("why", ""))
         for f in findings[:3]]
 label = {"S1": "확신", "S2": "필러", "S3": "미검증"}
 introduced_keys = {(i.get("id"), i.get("term"), i.get("line"))
@@ -675,6 +679,8 @@ PY
 diff -u "{원본경로}" "$CANDIDATE" | head -120
 diff <(grep -c '' "{원본경로}") <(grep -c '' "$CANDIDATE")
 ```
+
+초안 관문 표를 읽을 때 유래 라벨 둘을 섞지 않는다. LLM 층의 `윤문?` 는 발췌를 원문에서 못 찾았다는 뜻이고(윤문이 심었다는 확증이 아님), 결정적 행의 `윤문` 은 윤문이 그 용어를 들여왔다는 뜻이다.
 
 diff와 파일별 요약을 보여준 뒤 AskUserQuestion으로 적용 방식을 고른다.
 
@@ -703,7 +709,7 @@ git 저장소면 `git status --short`로 해당 파일이 이미 dirty한지 확
 3. **걷어낸 레이아웃 지문**: 파일별로 어떤 L 패턴을 몇 건 제거했는지 (볼드리드 불릿 7건, 상태 이모지 12개, 마무리 요약 섹션 1개 …)
 4. **남은 지문 (수정 안 함)**: report-only 축에서 발동 중인 것 — 표 밀도, 섹션 골격 균질성, 삼분 편향 등. 구조를 바꿔야 고쳐지므로 사람이 판단할 몫이라고 명시한다
 
-    **4b. 초안 관문 (수정 안 함)**: `SLOP=1`일 때만. 각 `{slug}/11_slop.json`을 읽어 파일별로 확신·필러·미검증 건수, 윤문 유입 건수, 상위 발췌 3건(LLM 판정 우선, 모자라면 결정적 층 히트로 채움)을 싣는다. 마지막에 "이 게이트는 고치지 않는다. 표면 윤문으로는 슬롭이 글이 되지 않는다는 게 이 항목의 전제다" 한 줄과 출처 링크(https://ahrefs.com/blog/how-we-use-ai-without-making-ai-slop/)를 붙인다. **실행 여부는 파일 존재가 아니라 `summary` 키로 판정한다**(Phase 8과 같은 기준 — Phase 6의 `extract-llm`은 monolith가 블록을 안 내도 이 파일을 만들므로 파일 존재는 증거가 아니다): `summary`가 없으면 그 파일은 "초안 관문 미실행 (compare 실패)"으로 적고 건수 표는 생략한다. `summary`는 있는데 `llm`이 `null`이면 "LLM 판정 누락"으로 적고, 최상위 `note`가 있으면 그 사유(`HUMANIZE-SUMMARY 블록 없음` / `slop_findings 키 없음`)를 괄호에 그대로 옮긴다. `SLOP=0`이면 이 항목 대신 "초안 관문: 꺼짐" 한 줄만 남긴다
+    **4b. 초안 관문 (수정 안 함)**: `SLOP=1`일 때만. 각 `{slug}/11_slop.json`을 읽어 파일별로 확신·필러·미검증 건수, 윤문 유입 건수, 상위 발췌 3건(LLM 판정 우선, 모자라면 결정적 층 히트로 채움)을 싣는다. 마지막에 "이 게이트는 고치지 않는다. 표면 윤문으로는 슬롭이 글이 되지 않는다는 게 이 항목의 전제다" 한 줄과 출처 링크(https://ahrefs.com/blog/how-we-use-ai-without-making-ai-slop/)를 붙인다. **실행 여부는 파일 존재가 아니라 `summary` 키로 판정한다**(Phase 8과 같은 기준 — Phase 6의 `extract-llm`은 monolith가 블록을 안 내도 이 파일을 만들므로 파일 존재는 증거가 아니다): `summary`가 없으면 그 파일은 "초안 관문 미실행 (compare 실패)"으로 적고 건수 표는 생략한다. `summary`는 있는데 `llm`이 `null`이면 "LLM 판정 누락"으로 적고, 최상위 `note`가 있으면 그 사유(`HUMANIZE-SUMMARY 블록 없음` / `slop_findings 키 없음`)를 괄호에 그대로 옮긴다. `SLOP=0`이면 이 항목 대신 "초안 관문: 꺼짐" 한 줄만 남긴다. 유래 라벨 둘은 섞지 않는다 — LLM 층의 `윤문?` 는 발췌를 원문에서 못 찾았다는 뜻이고(윤문이 심었다는 확증이 아님), 결정적 행의 `윤문` 은 윤문이 그 용어를 들여왔다는 뜻이다
 5. 채택 실패 파일과 그 사유
 6. **보류 목록**: 파일별로 (게이트, 사유, 권장 다음 행동: 재윤문/finalize, 예상 추가 LLM 콜 수 — 기본 1회, 정밀 모드에서 초안 관문이 켜져 있으면 judge 1회가 더 붙어 최대 2회). 각 `{slug}/pending.txt`를 모아 만든다(`action=none` 항목은 재시도 불가로 표시). `보류 재시도`로 이 목록에서 선택 실행할 수 있다고 안내를 붙인다
 7. 주요 문장 변경 하이라이트 3~5건 (before → after 한 줄씩)

@@ -620,6 +620,50 @@ class TestJudgeOriginResolution(unittest.TestCase):
         self.assertTrue(f["origin_verified"])
         self.assertEqual(f["origin_match_line"], 3, "정합된 원문 문장의 줄번호")
 
+    def test_partial_overlap_below_threshold_is_rewrite_origin(self):
+        """자카드 하한을 못 박는다 — 0.3~0.6 사이는 `원문` 으로 넘어오면 안 된다.
+
+        이 발췌는 `before.md` 줄 3 과 내용어 넷을 공유해 자카드가 0.444 다.
+        `ORIGIN_FUZZY_MIN` 을 0.3 으로 낮추면 이 테스트가 깨진다 — 임계를 느슨하게
+        바꾸는 변경이 조용히 통과하지 못하게 하는 것이 이 테스트의 목적이다.
+        """
+        data = self._run([{"item": "확신", "quote": "키를 지우면 원본을 다시 읽어야 한다.",
+                           "why": "겹침이 절반 이하", "after": "유지", "origin": "원문"}])
+        f = data["llm"]["findings"][0]
+        self.assertEqual(f["origin"], "윤문")
+        self.assertEqual(f["origin_method"], "none")
+        self.assertNotIn("origin_match_line", f)
+
+    def test_short_quote_skips_verbatim_tier(self):
+        """짧은 발췌의 문자 일치는 우연일 수 있어 1단계를 건너뛴다.
+
+        `TTL` 은 `before.md` 에 문자 그대로 있지만 `ORIGIN_VERBATIM_MIN_CHARS`(8자)에
+        못 미쳐 2단계로 넘어가고, 거기서도 자카드 0.333 이라 `윤문` 으로 끝난다.
+        """
+        data = self._run([{"item": "미검증", "quote": "TTL",
+                           "why": "발췌가 너무 짧다", "after": "유지", "origin": "원문"}])
+        f = data["llm"]["findings"][0]
+        self.assertNotEqual(f["origin_method"], "verbatim", "짧은 발췌는 문자 일치로 못 정한다")
+        self.assertEqual(f["origin_method"], "none")
+        self.assertEqual(f["origin"], "윤문")
+
+    def test_model_supplied_machine_keys_are_stripped(self):
+        """기계 표시 키는 기계만 붙인다 — 모델이 흉내 낸 값은 걷어낸다."""
+        data = self._run([
+            # quote 가 비어 판정을 못 하는데 모델이 기계 키 셋을 지어냈다
+            {"item": "필러", "quote": "", "why": "발췌 없음", "after": "유지", "origin": "원문",
+             "origin_verified": True, "origin_method": "verbatim", "origin_match_line": 99},
+            # 판정은 되지만 모델이 남긴 origin_match_line 이 결과에 새면 안 된다
+            {"item": "확신", "quote": "반드시 만료 시각을 함께 확인한다.", "why": "당위",
+             "after": "유지", "origin": "윤문", "origin_match_line": 99},
+        ])
+        empty, verbatim = data["llm"]["findings"]
+        self.assertEqual(empty["origin"], "원문", "모델이 준 origin 은 남는다")
+        for key in ("origin_verified", "origin_method", "origin_match_line"):
+            self.assertNotIn(key, empty, f"{key} 는 기계 판정에만 붙는다")
+        self.assertEqual(verbatim["origin_method"], "verbatim")
+        self.assertNotIn("origin_match_line", verbatim, "verbatim 은 줄번호를 남기지 않는다")
+
     def test_unrelated_quote_is_rewrite_origin(self):
         """(c) 원문에 내용어가 없는 발췌 — 윤문 유래."""
         data = self._run([{"item": "미검증", "quote": "레이트 리미팅 알고리즘을 새로 도입했다.",

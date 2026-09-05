@@ -325,6 +325,10 @@ S3_VALUE_SCALE = 5.0
 # "문제는 원문에 있었다"를 놓친다. 토큰 겹침으로 그 경우를 건진다.
 ORIGIN_FUZZY_MIN = 0.6
 
+# 1단계(문자 일치)를 믿으려면 발췌가 이만큼은 길어야 한다. `TTL` 처럼 짧은 조각은
+# 어느 문서에나 우연히 들어 있어 문자 일치가 유래의 근거가 못 된다 — 2단계로 넘긴다.
+ORIGIN_VERBATIM_MIN_CHARS = 8
+
 _NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
 
 # 근거 표지는 "확인하러 갈 곳"이 어디 있는지에 따라 판정 범위가 갈린다(설계 스펙 §2-1).
@@ -601,12 +605,15 @@ def verify_judge_origin(judge: dict, before_text: str) -> dict:
     발췌가 원문에 문자 그대로는 없다. 그래서 두 단계로 본다.
 
     1. 공백 정규화 후 원문에 그대로 있으면 `원문` / `origin_method: verbatim`.
+       단 발췌가 ORIGIN_VERBATIM_MIN_CHARS 미만이면 이 단계를 건너뛴다 — 짧은 조각의
+       문자 일치는 우연일 수 있어 유래의 근거가 못 된다.
     2. 아니면 원문 산문을 문장으로 쪼개 토큰 자카드를 재고, 최고점이
        ORIGIN_FUZZY_MIN 이상이면 `원문` / `fuzzy` 로 보고 그 문장의 줄번호를
        `origin_match_line` 에 남긴다. 그 아래면 `윤문` / `none`.
 
     세 경우 모두 `origin_verified: true` 를 달아 기계 판정임을 표시한다. quote 가
-    비어 있으면 대조할 것이 없으므로 모델이 준 값을 그대로 두고 아무 표시도 안 한다.
+    비어 있으면 대조할 것이 없으므로 모델이 준 `origin` 만 그대로 두고, 모델이
+    흉내 냈을 수 있는 기계 표시 키는 걷어낸다 — 이 세 키는 기계 판정에만 붙는다.
     """
     haystack = normalize_ws(before_text)
     units, _, _ = prose_units(before_text)
@@ -616,12 +623,16 @@ def verify_judge_origin(judge: dict, before_text: str) -> dict:
     findings: list[dict] = []
     for f in judge.get("findings") or []:
         g = dict(f)
+        # 기계 표시 키는 기계만 붙인다 — 모델이 흉내 낸 값이 섞이면 읽는 쪽이 속는다.
+        # 모든 갈래에 앞서 한 번 걷어내고, 아래에서 실제로 판정한 것만 다시 단다.
+        for k in ("origin_verified", "origin_method", "origin_match_line"):
+            g.pop(k, None)
         quote = normalize_ws(str(g.get("quote") or ""))
         if not quote:
             findings.append(g)
             continue
         g["origin_verified"] = True
-        if quote in haystack:
+        if len(quote) >= ORIGIN_VERBATIM_MIN_CHARS and quote in haystack:
             g["origin"] = "원문"
             g["origin_method"] = "verbatim"
             findings.append(g)
