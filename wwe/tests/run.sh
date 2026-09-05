@@ -143,4 +143,41 @@ if [[ "${RC}" -eq 0 ]]; then
   RC="${AR_RC}"
 fi
 
+# ---------------------------------------------------------------------------
+# slop_scan.py (게이트 S — 초안 관문 결정적 스캐너) 회귀 테스트 — 위 블록은
+# 건드리지 않고 파일 끝에 추가 실행만 덧붙인다. humanize-korean 없이 통과한다.
+# ---------------------------------------------------------------------------
+
+SS_HARNESS="${SCRIPT_DIR}/test_slop_scan.py"
+SS_SCRIPT="${SCRIPT_DIR}/../scripts/slop_scan.py"
+
+echo "=================================================================="
+echo "humanize-docs / slop_scan.py 테스트 러너"
+echo "  하네스 : ${SS_HARNESS}"
+echo "  대상   : ${SS_SCRIPT}"
+if [[ ! -f "${SS_SCRIPT}" ]]; then
+  echo "  상태   : slop_scan.py 없음 — 구현 대기 중 (테스트는 스킵으로 처리됨)"
+else
+  echo "  상태   : slop_scan.py 발견됨"
+fi
+echo "=================================================================="
+
+python3 "${SS_HARNESS}"
+SS_RC=$?
+
+echo "=================================================================="
+case "${SS_RC}" in
+  0)
+    echo "결과: 전체 통과 (exit ${SS_RC})"
+    ;;
+  *)
+    echo "결과: 실패/스킵 포함 (exit ${SS_RC}) — 위 unittest 출력에서 FAIL/ERROR/skipped 사유를 확인하세요."
+    ;;
+esac
+echo "=================================================================="
+
+if [[ "${RC}" -eq 0 ]]; then
+  RC="${SS_RC}"
+fi
+
 exit "${RC}"
