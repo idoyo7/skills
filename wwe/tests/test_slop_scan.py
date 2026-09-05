@@ -188,5 +188,51 @@ class TestSentencesUnit(unittest.TestCase):
         self.assertEqual([s["line"] for s in sents], [1, 1, 2])
 
 
+@unittest.skipIf(_script_missing_reason(), _script_missing_reason() or "")
+class TestFixtureExpectations(unittest.TestCase):
+    """픽스처마다 expected/*.json 의 발동 목록·히트 하한·히트 상한을 검증한다."""
+
+    FIXTURES: list[str] = ["s1_certainty", "clean"]
+
+    def test_fixtures_match_expected(self):
+        for name in self.FIXTURES:
+            with self.subTest(fixture=name):
+                src = CORPUS_DIR / f"{name}.md"
+                self.assertTrue(src.exists(), f"픽스처 없음: {src}")
+                rc, data = scan_json(src)
+                self.assertEqual(rc, 0)
+                self.assertIsNotNone(data, "stdout 마지막 줄이 JSON 이어야 한다")
+                exp = load_expected(f"{name}.json")
+                self.assertEqual(
+                    sorted(data["triggered"]), sorted(exp["triggered"]),
+                    f"{name}: 발동 목록 불일치 (metrics={data['metrics']})",
+                )
+                counts = hit_counts(data)
+                for mid, low in exp.get("hits_min", {}).items():
+                    self.assertGreaterEqual(counts.get(mid, 0), low, f"{name}: {mid} 히트 하한 미달")
+                for mid, high in exp.get("hits_max", {}).items():
+                    self.assertLessEqual(counts.get(mid, 0), high, f"{name}: {mid} 히트 상한 초과")
+
+    def test_scan_json_metric_schema(self):
+        rc, data = scan_json(CORPUS_DIR / "s1_certainty.md")
+        self.assertEqual(rc, 0)
+        for m in data["metrics"]:
+            for key in ("id", "label", "kind", "raw", "value", "triggered", "note"):
+                self.assertIn(key, m)
+            self.assertEqual(m["kind"], "report", "게이트 S 지표는 전부 report 종류다")
+            self.assertGreaterEqual(m["value"], 0.0)
+            self.assertLessEqual(m["value"], 1.0)
+
+    def test_hits_carry_line_and_quote(self):
+        rc, data = scan_json(CORPUS_DIR / "s1_certainty.md")
+        self.assertEqual(rc, 0)
+        self.assertTrue(data["hits"], "S1 픽스처는 히트가 있어야 한다")
+        for h in data["hits"]:
+            for key in ("id", "term", "line", "quote"):
+                self.assertIn(key, h)
+            self.assertGreater(h["line"], 0)
+            self.assertLessEqual(len(h["quote"]), 80)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
