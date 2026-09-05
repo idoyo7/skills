@@ -732,8 +732,11 @@ def cmd_compare(args: argparse.Namespace) -> int:
     line = build_pending_line(summary, triggered)
     if line:
         if args.pending:
-            with open(args.pending, "a", encoding="utf-8") as f:
-                f.write(line + "\n")
+            try:
+                with open(args.pending, "a", encoding="utf-8") as f:
+                    f.write(line + "\n")
+            except OSError as e:
+                print(f"slop_scan: pending 기록 실패 ({args.pending}): {e}", file=sys.stderr)
         else:
             print(line)
     print(
