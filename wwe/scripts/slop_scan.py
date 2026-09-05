@@ -257,6 +257,63 @@ def m_S1(sents: list[dict], lex: dict, nonspace: int) -> tuple[dict, list[dict]]
 
 
 # ---------------------------------------------------------------------------
+# 5b-2. 지표 S2 — 필러
+#
+# 길이 상한과 잔여 음절 기준은 스펙 초기값(30자·4음절)보다 넓다. 그 값으로는
+# tests/sig_corpus 12편에서 필러가 0건이라 지표가 아무 말도 하지 않는다. 오탐을
+# 감수하고 느슨하게 시작한 뒤 보정 태스크의 실측으로 조인다.
+# ---------------------------------------------------------------------------
+
+S2_MAX_CHARS = 40            # 공백 제외 글자 수 상한 (스펙 초기값 30에서 넓혔다 — 아래 주석)
+S2_RESIDUAL_SYLLABLES = 6    # 남은 한글 음절이 이 값 미만이면 필러 (스펙 초기값 4에서 넓혔다)
+S2_TRIGGER_HITS = 2
+S2_TRIGGER_RATIO = 0.05
+S2_VALUE_SCALE = 0.15
+
+# lexicon 항목을 뺀 나머지에서 조사·어미·강조부사를 걷어낸다. 긴 것을 먼저 둔다 —
+# 정규식 교대는 왼쪽 우선이라 순서가 바뀌면 `에서` 가 `에` 로 잘린다.
+_S2_STRIP_RE = re.compile(
+    "|".join([
+        "것이다", "습니다", "입니다", "였다", "했다", "된다", "한다", "하다", "이다", "되다", "지만",
+        "이라는", "라는", "에서", "에게", "으로", "까지", "부터", "처럼", "보다",
+        "상당히", "무척", "정말", "물론", "사실", "특히", "매우", "아주", "꽤", "참",
+        "은", "는", "이", "가", "을", "를", "의", "에", "와", "과", "도", "만", "로", "고", "며", "서",
+    ])
+)
+
+
+def m_S2(sents: list[dict], lex: dict) -> tuple[dict, list[dict]]:
+    hits: list[dict] = []
+    total = len(sents)
+    for s in sents:
+        text = s["text"]
+        if len(re.sub(r"\s", "", text)) > S2_MAX_CHARS:
+            continue
+        matched = None
+        residual = text
+        for item in lex.get("S2_filler", []):
+            if item["re"].search(residual):
+                if matched is None:
+                    matched = item["term"]
+                residual = item["re"].sub("", residual)
+        if matched is None:
+            continue
+        residual = _S2_STRIP_RE.sub("", residual)
+        if len(re.findall(r"[가-힣]", residual)) >= S2_RESIDUAL_SYLLABLES:
+            continue
+        hits.append({"id": "S2", "term": matched, "line": s["line"], "quote": text[:80]})
+    ratio = (len(hits) / total) if total else 0.0
+    triggered = len(hits) >= S2_TRIGGER_HITS or (total > 0 and ratio >= S2_TRIGGER_RATIO and hits)
+    value = min(1.0, ratio / S2_VALUE_SCALE)
+    note = (
+        f"필러 문장 {len(hits)} / 전체 {total} = {ratio:.1%}"
+        f" (임계 {S2_TRIGGER_HITS}문장 또는 {S2_TRIGGER_RATIO:.0%})"
+    )
+    raw = {"hits": len(hits), "sentences": total, "ratio": round(ratio, 4)}
+    return metric("S2", "필러", "report", raw, value, bool(triggered), note), hits
+
+
+# ---------------------------------------------------------------------------
 # 5c. 집계 — 지표는 Task 2~4 가 하나씩 채운다
 # ---------------------------------------------------------------------------
 
@@ -266,7 +323,8 @@ def scan_text(text: str, lex: dict) -> dict:
     sents = sentences(units)
     nonspace = sum(len(re.sub(r"\s", "", t)) for _, t in units)
     m1, h1 = m_S1(sents, lex, nonspace)
-    return {"metrics": [m1], "hits": list(h1)}
+    m2, h2 = m_S2(sents, lex)
+    return {"metrics": [m1, m2], "hits": list(h1) + list(h2)}
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,5 @@
+{
+  "triggered": ["S2"],
+  "hits_min": {"S2": 3},
+  "hits_max": {"S1": 0, "S3": 0}
+}
