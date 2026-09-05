@@ -563,10 +563,46 @@ def diff_terms(before_hits: list[dict], after_hits: list[dict]) -> tuple[list[di
     return introduced, resolved
 
 
-def merge_llm(llm_monolith: dict | None, judge: dict | None) -> dict | None:
-    """judge 결과가 있으면 그것이 llm 이고, 없으면 monolith 복사본, 둘 다 없으면 null."""
+_WS_RE = re.compile(r"\s+")
+
+
+def normalize_ws(text: str) -> str:
+    """연속 공백을 한 칸으로 접고 앞뒤를 턴다 — 줄바꿈으로 끊긴 발췌도 같게 본다."""
+    return _WS_RE.sub(" ", text).strip()
+
+
+def verify_judge_origin(judge: dict, before_text: str) -> dict:
+    """judge 검출의 origin 을 원문 대조로 다시 매긴다.
+
+    에이전트 정의는 "발췌가 원본에 그대로 있으면 원문" 이라는 문자열 기준을 주지만,
+    모델이 그 규칙을 문자열이 아니라 문제의 출처로 읽는 일이 실측에서 관측됐다(1.4.0).
+    유래 판정을 모델의 규칙 준수에 맡기지 않고 여기서 결정적으로 다시 매긴다 —
+    공백 정규화 후 원문에 그대로 있으면 `원문`, 없으면 `윤문`이다. 다시 매긴 항목에는
+    `origin_verified: true` 를 달아 기계 판정과 모델이 준 값을 읽는 쪽이 구분할 수 있게 한다.
+    quote 가 비어 있으면 대조할 것이 없으므로 모델이 준 값을 그대로 둔다.
+    """
+    haystack = normalize_ws(before_text)
+    out = dict(judge)
+    findings: list[dict] = []
+    for f in judge.get("findings") or []:
+        g = dict(f)
+        quote = normalize_ws(str(g.get("quote") or ""))
+        if quote:
+            g["origin"] = "원문" if quote in haystack else "윤문"
+            g["origin_verified"] = True
+        findings.append(g)
+    out["findings"] = findings
+    return out
+
+
+def merge_llm(llm_monolith: dict | None, judge: dict | None, before_text: str = "") -> dict | None:
+    """judge 결과가 있으면 그것이 llm 이고, 없으면 monolith 복사본, 둘 다 없으면 null.
+
+    judge 를 채택할 때는 origin 을 원문 대조로 다시 매긴다(verify_judge_origin).
+    monolith 검출은 정의상 전부 원문 유래라 다시 매길 것이 없다.
+    """
     if judge is not None and not judge.get("error"):
-        return judge
+        return verify_judge_origin(judge, before_text)
     if llm_monolith is not None and not llm_monolith.get("error"):
         return dict(llm_monolith)
     return None
@@ -695,7 +731,7 @@ def cmd_compare(args: argparse.Namespace) -> int:
     prev = _load_json(args.llm) or {}
     llm_monolith = prev.get("llm_monolith")
     judge = _load_json(args.judge)
-    llm = merge_llm(llm_monolith, judge)
+    llm = merge_llm(llm_monolith, judge, before_text)
 
     counts = {"S1": 0, "S2": 0, "S3": 0}
     for h in after_scan["hits"]:

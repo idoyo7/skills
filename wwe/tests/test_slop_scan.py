@@ -517,6 +517,74 @@ class TestCompare(unittest.TestCase):
             self.assertTrue(data["source"]["final"].endswith("summary_present.md"),
                             "extract-llm 이 적어 둔 source.final 이 살아 있어야 한다")
 
+    def test_judge_origin_rederived_from_before(self):
+        """judge 의 origin 은 모델 값이 아니라 원문 대조로 다시 매긴다.
+
+        모델이 규칙을 문자열이 아니라 문제의 출처로 읽는 일이 실측에서 관측됐다(1.4.0).
+        아래 두 검출은 모델이 준 origin 이 둘 다 뒤집혀 있는데, compare 를 거치면
+        발췌가 실제로 원문에 있는지로 바로잡혀야 한다.
+        """
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            tdp = Path(td)
+            judge = tdp / "11_slop_judge.json"
+            judge.write_text(json.dumps({
+                "provider": "wwe-slop-judge",
+                "findings": [
+                    # before.md 에 그대로 있는 발췌인데 모델은 윤문이라고 했다 → 원문으로 정정
+                    {"item": "확신", "quote": "반드시 만료 시각을 함께 확인한다.",
+                     "why": "근거 없는 당위", "after": "유지", "origin": "윤문"},
+                    # after 에만 있는 발췌인데 모델은 원문이라고 했다 → 윤문으로 정정
+                    {"item": "확신", "quote": "분명히 이 순서가 맞다.",
+                     "why": "윤문이 심은 단정", "after": "제거", "origin": "원문"},
+                ],
+                "truncated": False,
+            }, ensure_ascii=False), encoding="utf-8")
+            out = tdp / "11_slop.json"
+            pending = tdp / "pending.txt"
+            r = run_slop([
+                "compare",
+                "--before", str(CORPUS_DIR / "before.md"),
+                "--after", str(CORPUS_DIR / "after_introduced.md"),
+                "--judge", str(judge), "--out", str(out), "--pending", str(pending),
+            ])
+            self.assertEqual(r.returncode, 0)
+            data = json.loads(out.read_text(encoding="utf-8"))
+            found = data["llm"]["findings"]
+            self.assertEqual(found[0]["origin"], "원문", "원문에 그대로 있는 발췌")
+            self.assertEqual(found[1]["origin"], "윤문", "원문에 없는 발췌")
+            self.assertTrue(all(f["origin_verified"] is True for f in found),
+                            "기계 판정을 거쳤다는 표시가 있어야 한다")
+            # 이 정정은 pending 줄과 summary 를 건드리지 않는다.
+            self.assertEqual(data["summary"]["llm_findings"], 2)
+            self.assertEqual(data["summary"]["introduced"], 2)
+            line = pending.read_text(encoding="utf-8").strip()
+            self.assertTrue(line.startswith("gate=S exit=1 action=none reason=초안 관문: "), line)
+
+    def test_judge_origin_kept_when_quote_missing(self):
+        """quote 가 비어 있으면 대조할 것이 없으므로 모델 값을 그대로 둔다."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            tdp = Path(td)
+            judge = tdp / "11_slop_judge.json"
+            judge.write_text(json.dumps({
+                "provider": "wwe-slop-judge",
+                "findings": [{"item": "필러", "quote": "", "why": "발췌 없음",
+                              "after": "유지", "origin": "원문"}],
+                "truncated": False,
+            }, ensure_ascii=False), encoding="utf-8")
+            out = tdp / "11_slop.json"
+            r = run_slop([
+                "compare",
+                "--before", str(CORPUS_DIR / "before.md"),
+                "--after", str(CORPUS_DIR / "after_introduced.md"),
+                "--judge", str(judge), "--out", str(out),
+            ])
+            self.assertEqual(r.returncode, 0)
+            f = json.loads(out.read_text(encoding="utf-8"))["llm"]["findings"][0]
+            self.assertEqual(f["origin"], "원문")
+            self.assertNotIn("origin_verified", f)
+
     def test_pending_line_appended(self):
         import tempfile
         with tempfile.TemporaryDirectory() as td:
