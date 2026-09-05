@@ -6,6 +6,8 @@ v1.2는 파일당 LLM 1콜 상한을 두는 경제 모드가 기본값이고, �
 
 v1.3은 작성자 반복 구절 검출을 더했다. `scripts/author_repeat.py`가 코퍼스 교차 빈도와 시드 파일 두 경로로 반복 표현을 잡고, Phase 4에서 gen-block으로 윤문 지침에 자동 주입해 같은 구절이 다시 나오지 않도록 막는다. Phase 7 게이트 C 옆에서는 시드 표현 잔존 여부를 스캔해 보고한다(exit에는 영향 없음).
 
+v1.4는 초안 관문(게이트 S)을 더했다. 표면 윤문으로는 슬롭이 글이 되지 않는다는 [Ahrefs 의 지적](https://ahrefs.com/blog/how-we-use-ai-without-making-ai-slop/)을 받아, 문서가 근거 없이 단정하는 곳·지워도 손실이 없는 곳·출처 없는 수치가 몇 건인지 세어 승인 전에 보여준다. 고치지는 않는다. 결정적 층은 `scripts/slop_scan.py`가 재고, LLM 층 판정은 monolith 콜에 편승해 추가 콜 없이 딸려 온다. 정밀 모드에서만 비저자 판정자 `wwe-slop-judge`가 1콜 붙는다.
+
 ## 요구사항
 
 Claude Code와 humanize-korean 플러그인이 필요하다.
@@ -50,6 +52,7 @@ Claude Code에서 자연어로 요청하면 된다.
 | 축약하지 마 | 축약 기능 끄기(기본은 켜짐) |
 | 이모지 살려줘 | 이모지 제거 규칙(L6) 끄기 |
 | 지문만 봐줘 | 윤문 없이 레이아웃 지문 점수만 계산 |
+| 슬롭 검사 빼줘 / 초안 관문 꺼줘 | 초안 관문(게이트 S) 끄기(기본은 켜짐) |
 
 전체 옵션은 `SKILL.md`의 §옵션 절에 정리되어 있다.
 
@@ -59,7 +62,7 @@ Claude Code에서 자연어로 요청하면 된다.
 bash tests/run.sh
 ```
 
-md_shield·llm_signature·heading_anchor 세 하네스를 순서대로 돌리고, 처음 만난 실패 코드를 넘긴다(전부 통과하면 0).
+md_shield·llm_signature·heading_anchor·author_repeat·slop_scan 다섯 하네스를 순서대로 돌리고, 처음 만난 실패 코드를 넘긴다(전부 통과하면 0).
 
 ## 구조
 
@@ -73,6 +76,10 @@ md_shield·llm_signature·heading_anchor 세 하네스를 순서대로 돌리고
 - `scripts/author_repeat.py` — 작성자 반복 구절 검출·gen-block 생성
 - `references/author-tics.txt` — 장르별 반복 구절 시드 목록
 - `references/author-repeat-stop.txt` — 검출 시 걸러낼 불용어 목록
+- `scripts/slop_scan.py` — 초안 관문(게이트 S) 스캐너. scan·extract-llm·compare
+- `references/slop-lexicon.txt` — 확신 표지·필러·주장/근거 표지 사전
+- `references/slop-gate.md` — 초안 관문 LLM 층 지침(monolith 입력에 주입)
+- `agents/wwe-slop-judge.md` — 정밀 모드 전용 비저자 판정 에이전트
 - `INSTALL.md` — 사람용 설치·구성 가이드
 - `AGENTS.md` — AI 에이전트용 설치·사용 지침
 
