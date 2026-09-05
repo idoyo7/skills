@@ -192,7 +192,10 @@ class TestSentencesUnit(unittest.TestCase):
 class TestFixtureExpectations(unittest.TestCase):
     """픽스처마다 expected/*.json 의 발동 목록·히트 하한·히트 상한을 검증한다."""
 
-    FIXTURES: list[str] = ["s1_certainty", "clean", "s2_filler", "s3_unsourced", "s3_sourced"]
+    FIXTURES: list[str] = [
+        "s1_certainty", "clean", "s2_filler",
+        "s3_unsourced", "s3_sourced", "s3_fence_adjacent", "s3_number_in_table",
+    ]
 
     def test_fixtures_match_expected(self):
         for name in self.FIXTURES:
@@ -262,6 +265,27 @@ class TestScanContract(unittest.TestCase):
         ])
         self.assertEqual(r.returncode, 0)
         self.assertIn("lexicon 파일 없음", r.stdout)
+
+
+@unittest.skipIf(_script_missing_reason(), _script_missing_reason() or "")
+class TestS3SentenceScopedEvidence(unittest.TestCase):
+    """S3 근거 표지의 판정 범위(문장 vs 문단)를 직접 검증한다.
+
+    인라인 코드·마크다운 링크·URL·HZ 토큰은 "같은 문장"에 있을 때만 근거로 본다
+    (설계 스펙 §2-1). 옆 문장에 백틱이 있다고 이 문장의 주장까지 면제되면 안 된다.
+    """
+
+    def test_inline_code_in_other_sentence_does_not_waive_claim(self):
+        slop_scan = _import_slop_scan()
+        text = "대부분의 팀이 40% 이상 비용을 절감했다. 배포 방식은 `docker compose up` 명령을 쓴다.\n"
+        lex = slop_scan.load_lexicon(str(LEXICON))
+        self.assertIsNotNone(lex)
+        result = slop_scan.scan_text(text, lex)
+        self.assertEqual(
+            len(result["hits"]), 1,
+            f"인라인 코드는 같은 문장에 없으면 근거가 아니다: {result['hits']}",
+        )
+        self.assertEqual(result["hits"][0]["quote"], "대부분의 팀이 40% 이상 비용을 절감했다.")
 
 
 if __name__ == "__main__":
