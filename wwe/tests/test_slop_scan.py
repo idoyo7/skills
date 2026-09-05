@@ -268,6 +268,66 @@ class TestScanContract(unittest.TestCase):
 
 
 @unittest.skipIf(_script_missing_reason(), _script_missing_reason() or "")
+class TestExtractLlm(unittest.TestCase):
+    """extract-llm 의 present / absent / broken 세 갈래."""
+
+    def _extract(self, fixture: str) -> tuple[int, dict]:
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td) / "11_slop.json"
+            r = run_slop([
+                "extract-llm",
+                "--final", str(CORPUS_DIR / fixture),
+                "--out", str(out),
+            ])
+            self.assertTrue(out.exists(), f"산출물이 없다: {r.stdout}\n{r.stderr}")
+            return r.returncode, json.loads(out.read_text(encoding="utf-8"))
+
+    def test_present_parses_two_findings(self):
+        rc, data = self._extract("summary_present.md")
+        self.assertEqual(rc, 0)
+        self.assertEqual(data["source"]["final"].endswith("summary_present.md"), True)
+        self.assertIsNone(data["source"]["before"])
+        self.assertIsNone(data["source"]["after"])
+        llm = data["llm_monolith"]
+        self.assertEqual(llm["provider"], "monolith")
+        self.assertEqual(llm["truncated"], False)
+        self.assertEqual(len(llm["findings"]), 2)
+        first = llm["findings"][0]
+        self.assertEqual(first["item"], "확신")
+        self.assertEqual(first["quote"], "이 방식은 어떤 경우에도 안전하다")
+        self.assertEqual(first["why"], "보편양화, 근거 없음")
+        self.assertEqual(first["after"], "유지")
+        self.assertEqual(first["origin"], "원문", "monolith 판정은 전부 원문 유래다")
+        self.assertEqual(llm["findings"][1]["item"], "미검증")
+        self.assertEqual(llm["findings"][1]["origin"], "원문")
+
+    def test_absent_yields_null_with_note(self):
+        rc, data = self._extract("summary_absent.md")
+        self.assertEqual(rc, 0)
+        self.assertIsNone(data["llm_monolith"])
+        self.assertEqual(data.get("note"), "slop_findings 키 없음")
+
+    def test_broken_yields_error_object(self):
+        rc, data = self._extract("summary_broken.md")
+        self.assertEqual(rc, 0)
+        self.assertIsInstance(data["llm_monolith"], dict)
+        self.assertIn("error", data["llm_monolith"])
+
+    def test_no_block_at_all_yields_null(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            final = Path(td) / "final.md"
+            final.write_text("블록이 없는 평범한 본문이다.\n", encoding="utf-8")
+            out = Path(td) / "11_slop.json"
+            r = run_slop(["extract-llm", "--final", str(final), "--out", str(out)])
+            self.assertEqual(r.returncode, 0)
+            data = json.loads(out.read_text(encoding="utf-8"))
+            self.assertIsNone(data["llm_monolith"])
+            self.assertEqual(data.get("note"), "HUMANIZE-SUMMARY 블록 없음")
+
+
+@unittest.skipIf(_script_missing_reason(), _script_missing_reason() or "")
 class TestS3SentenceScopedEvidence(unittest.TestCase):
     """S3 근거 표지의 판정 범위(문장 vs 문단)를 직접 검증한다.
 
