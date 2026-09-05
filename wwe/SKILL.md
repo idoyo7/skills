@@ -630,7 +630,7 @@ fi
 # monolith 가 블록을 안 냈어도 11_slop.json 을 만들기 때문에, 파일이 있다는 사실은
 # "compare 가 돌았다"의 증거가 못 된다. summary 는 compare 만 쓴다. SLOP=0 분기가
 # 실제로 찍히도록 이 python 자체는 항상 돌리고, SLOP 판정은 안에서 한다.
-python3 - "$D/11_slop.json" <<'PY'
+SLOP="${SLOP:-1}" python3 - "$D/11_slop.json" <<'PY'
 import json, os, sys
 path = sys.argv[1]
 if os.environ.get("SLOP", "1") != "1":
