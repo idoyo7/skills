@@ -451,17 +451,27 @@ def extract_summary_block(text: str) -> str | None:
     m = SUMMARY_OPEN_RE.search(text)
     if not m:
         return None
-    end = text.find("-->", m.end())
-    return text[m.end(): end if end >= 0 else len(text)]
+    start = m.end()
+    # 첫 "-->" 로 끊으면 quote/why 값 안의 "-->" 에 블록이 잘린다 — 이 블록은
+    # final.md 맨 끝에 있으므로 종결자는 항상 "마지막" "-->" 다.
+    end = text.rfind("-->")
+    if end < start:
+        raise ValueError("HUMANIZE-SUMMARY 종결자 없음")
+    return text[start:end]
 
 
 def _unquote(value: str) -> str:
     v = value.strip()
     if v[:1] in ('"', "'"):
         quote = v[0]
-        end = v.find(quote, 1)
-        if end > 0:
-            return v[1:end]
+        # 첫 닫는 인용부호에서 끊으면 값 안의 이스케이프/중첩 인용부호가 잘린다 —
+        # 닫는 인용부호는 항상 "마지막" 인용부호(뒤에 공백·주석만 남는 자리)다.
+        last_q = v.rfind(quote)
+        tail = v[last_q + 1:].strip()
+        if last_q <= 0 or (tail and not tail.startswith("#")):
+            raise ValueError(f"닫는 인용부호가 없다: {value!r}")
+        inner = v[1:last_q]
+        return inner.replace(f"\\{quote}", quote).replace("\\\\", "\\")
     if "#" in v:
         v = v.split("#", 1)[0]
     return v.strip()
@@ -562,16 +572,21 @@ def cmd_extract_llm(args: argparse.Namespace) -> int:
     if text is None:
         note = "final.md 를 읽을 수 없음"
     else:
-        block = extract_summary_block(text)
-        if block is None:
-            note = "HUMANIZE-SUMMARY 블록 없음"
-        else:
-            try:
-                llm_monolith = parse_slop_findings(block)
-                if llm_monolith is None:
-                    note = "slop_findings 키 없음"
-            except Exception as e:  # noqa: BLE001 — 파싱 실패는 error 객체로 남기고 진행한다
-                llm_monolith = {"error": f"slop_findings 파싱 실패: {e}"}
+        try:
+            block = extract_summary_block(text)
+        except Exception as e:  # noqa: BLE001 — 종결자 누락은 error 객체로 남기고 진행한다
+            block = None
+            llm_monolith = {"error": str(e)}
+        if llm_monolith is None:
+            if block is None:
+                note = "HUMANIZE-SUMMARY 블록 없음"
+            else:
+                try:
+                    llm_monolith = parse_slop_findings(block)
+                    if llm_monolith is None:
+                        note = "slop_findings 키 없음"
+                except Exception as e:  # noqa: BLE001 — 파싱 실패는 error 객체로 남기고 진행한다
+                    llm_monolith = {"error": f"slop_findings 파싱 실패: {e}"}
     # source 는 스펙 §133의 세 키를 다 갖춘 채로 시작한다 — compare 가 before/after 만 채운다.
     payload: dict = {
         "version": 1,
