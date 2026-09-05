@@ -49,6 +49,33 @@ for skill_md in "$REPO_DIR"/*/SKILL.md; do
   fi
 done
 
+# ── 1-b. 에이전트 심링크 ────────────────────────────────────────────────────
+# 스킬이 Agent 도구로 부르는 서브에이전트 정의는 ~/.claude/agents/ 에 있어야
+# 인식된다. 스킬 심링크와 같은 규칙이다 — 같은 이름의 실파일이 있으면 건너뛰고
+# 알린다. --no-hooks 와는 무관하게 항상 돈다(에이전트는 훅이 아니다).
+AGENTS_DIR="$HOME/.claude/agents"
+mkdir -p "$AGENTS_DIR"
+for agent_md in "$REPO_DIR"/*/agents/*.md; do
+  [ -f "$agent_md" ] || continue
+  name="$(basename "$agent_md")"
+  dest="$AGENTS_DIR/$name"
+
+  if [ -L "$dest" ]; then
+    current="$(resolve_path "$dest")"
+    if [ "$current" = "$agent_md" ]; then
+      echo "ok:   $name (에이전트 이미 연결됨)"
+    else
+      ln -sfn "$agent_md" "$dest"
+      echo "fix:  $name → $agent_md (다른 곳을 가리키던 링크 교체)"
+    fi
+  elif [ -e "$dest" ]; then
+    echo "skip: $name — $dest 가 실파일로 존재. 치운 뒤 다시 실행"
+  else
+    ln -s "$agent_md" "$dest"
+    echo "new:  $name → $agent_md"
+  fi
+done
+
 # ── 2. 훅 설치 ─────────────────────────────────────────────────────────────
 # 훅마다 어느 이벤트(Stop/PreToolUse 등)·matcher 에 등록되는지는 각 훅
 # 디렉토리 안의 hook.conf 에 선언한다(중앙 표 대신 분산 메타 파일을 택한 이유:
