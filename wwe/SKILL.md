@@ -1,6 +1,6 @@
 ---
 name: wwe
-version: "1.3.4"
+version: "1.4.0"
 description: 작업 디렉토리의 마크다운 문서(.md)에서 Claude·GPT가 남긴 티를 걷어내는 스킬. 두 축을 함께 잡는다 — (1) 문장 축은 humanize-korean 파이프라인(번역투·피동 남용·명사화 누적·결산 lexicon 70패턴)을 재사용하고, (2) 기존 taxonomy에 없는 문서 레이아웃 지문 축(볼드리드 불릿 `- **X**: 설명`, 상태 이모지 ✅⚠️, 서두 TL;DR 박스, 섹션마다 붙은 `---`, 마지막 "정리" 재진술 섹션, 강조용 인용블록, 표 남용·섹션 골격 균질성·삼분 편향)을 L1~L14 지표로 결정적으로 측정한다. 정책은 "장식만 제거, 구조는 보존" — 코드블록·frontmatter·표·링크·헤딩 텍스트·불릿 개수는 바이트 단위로 지킨다. 윤문하는 것도 Claude이므로 지문 점수를 윤문 전후로 기계 측정해 하락을 강제한다(지문 재생산 차단). 기본은 **경제 모드**(파일당 monolith LLM 1콜 상한 — 게이트가 문제를 잡아도 자동 재시도 대신 보류 목록에 기록하고 `정밀 모드`로만 해제)이고, 중단된 실행은 **이어서/재개**로 이미 낸 LLM 콜을 다시 지불하지 않고 이어간다. 여러 파일 일괄 처리, 대상 자동 분류(한글 비율·산문량·에이전트 지시 파일 회피), 삼중 게이트 검증, diff 미리보기 후 승인 적용까지 한 흐름. v1.3부터 작성자 반복 구절 검출과 시드 기반 제거를 지원한다 — `scripts/author_repeat.py`가 코퍼스·시드 파일로 반복 표현을 잡고, gen-block으로 윤문 지침에 주입해 같은 구절이 재생산되지 않도록 막는다. 트리거 — "wwe", "MD 문서 윤문", "마크다운 윤문", "README 윤문", "문서 AI 티 제거", "Claude 티 나는 문서", "AI가 쓴 게시물 티 제거", "docs 윤문", "이 디렉토리 문서 다듬어", "기술문서 자연스럽게", "humanize docs", "문서 번역투 제거", "AI 레이아웃 지문". 평문 텍스트 한 덩어리 윤문은 humanize-korean(/humanize), 문서 구조·내용 자체를 다시 쓰는 작업은 별도 집필 스킬.
 ---
 
@@ -42,7 +42,7 @@ targets.txt의 파일마다 산출물 존재로 진행 단계를 추정해 표�
 
 그다음 AskUserQuestion으로 "지난 작업을 이어할까요?"를 묻는다 — 선택지 `[이어서 진행 / 새로 시작]`. 사용자의 원 요청에 이미 "이어서"/"재개"라는 말이 있으면 이 질문을 건너뛰고 **가장 최근 미완료 run을 바로 재개**한다.
 
-- **이어서 진행**: 그 run의 `run_id`(디렉토리명에서 그대로 읽는다 — 아래 채번 규칙은 적용하지 않는다)를 그대로 쓰고, `_workspace/docs-{run_id}/options.env`를 **그대로 재사용**한다(옵션을 다시 해석하지 않는다 — 이미 낸 LLM 콜이 어떤 옵션 상태에서 만들어졌는지가 그 콜의 일부이므로, run의 옵션 상태는 run의 정체성이다). **재사용은 곧 명시적으로 다시 읽는다는 뜻이다** — `options.env`를 소싱해 `HEADING_EDIT`·`CONDENSE`·`STRICT` 세 값을 확인하고, 이후 모든 Claude 판단(Phase 4의 diagnostician 게이트, 게이트 A·B·C의 경제/정밀 후속 판단 등 — "Phase 1에서 이미 정한 값을 안다"는 새 run에서만 성립하고 재개에서는 성립하지 않는다)에 이 값을 그대로 쓴다. 사용자의 재개 요청이 새 옵션을 명시했으면("정밀 모드로 이어서" 등) 실행 중간에 옵션을 바꿀 수 없다고 경고하고, 그 옵션을 쓰려면 새 run으로 다시 시작해야 한다고 안내한다. 재개가 확정되면 Phase 1의 옵션 해석 블록(options.env 작성)과 대상 분류·승인은 다시 밟지 않는다 — 대상 파일은 그 run의 `targets.txt`로 정해진다(`{slug}/` 디렉토리가 아니라 이 파일이 소스오브트루스다). `08_applied.txt`가 있는 파일은 이미 사이드카/제자리로 적용까지 끝난 것이므로 재개 대상에서 제외하고 완료로 보고한다. 나머지 파일은 이후 Phase 2부터 각 Phase의 규칙대로 이어간다(디렉토리가 아직 없는 파일은 Phase 3부터 시작): **Bash 단계는 무조건 다시 돌고(Phase 3의 마스킹부터 Phase 7의 게이트까지 전부 재실행 — 공짜고, Phase 6a의 스테일 아티팩트 정리도 그래야 정상 작동한다), LLM 콜만 각 Phase의 재개 스킵 가드를 따른다**(아래 Phase 5·Phase 4의 diagnostician 가드 참고 — 각 가드는 그 가드가 확인하는 산출물을 실제로 만든 콜에만 유효하다: 예를 들어 finalizer 스킵 가드는 지금의 final.md를 판정한 09_finalize.json에만 유효하다).
+- **이어서 진행**: 그 run의 `run_id`(디렉토리명에서 그대로 읽는다 — 아래 채번 규칙은 적용하지 않는다)를 그대로 쓰고, `_workspace/docs-{run_id}/options.env`를 **그대로 재사용**한다(옵션을 다시 해석하지 않는다 — 이미 낸 LLM 콜이 어떤 옵션 상태에서 만들어졌는지가 그 콜의 일부이므로, run의 옵션 상태는 run의 정체성이다). **재사용은 곧 명시적으로 다시 읽는다는 뜻이다** — `options.env`를 소싱해 `HEADING_EDIT`·`CONDENSE`·`STRICT`·`SLOP` 네 값을 확인하고, 이후 모든 Claude 판단(Phase 4의 diagnostician 게이트, 게이트 A·B·C의 경제/정밀 후속 판단 등 — "Phase 1에서 이미 정한 값을 안다"는 새 run에서만 성립하고 재개에서는 성립하지 않는다)에 이 값을 그대로 쓴다. 사용자의 재개 요청이 새 옵션을 명시했으면("정밀 모드로 이어서" 등) 실행 중간에 옵션을 바꿀 수 없다고 경고하고, 그 옵션을 쓰려면 새 run으로 다시 시작해야 한다고 안내한다. 재개가 확정되면 Phase 1의 옵션 해석 블록(options.env 작성)과 대상 분류·승인은 다시 밟지 않는다 — 대상 파일은 그 run의 `targets.txt`로 정해진다(`{slug}/` 디렉토리가 아니라 이 파일이 소스오브트루스다). `08_applied.txt`가 있는 파일은 이미 사이드카/제자리로 적용까지 끝난 것이므로 재개 대상에서 제외하고 완료로 보고한다. 나머지 파일은 이후 Phase 2부터 각 Phase의 규칙대로 이어간다(디렉토리가 아직 없는 파일은 Phase 3부터 시작): **Bash 단계는 무조건 다시 돌고(Phase 3의 마스킹부터 Phase 7의 게이트까지 전부 재실행 — 공짜고, Phase 6a의 스테일 아티팩트 정리도 그래야 정상 작동한다), LLM 콜만 각 Phase의 재개 스킵 가드를 따른다**(아래 Phase 5·Phase 4의 diagnostician 가드 참고 — 각 가드는 그 가드가 확인하는 산출물을 실제로 만든 콜에만 유효하다: 예를 들어 finalizer 스킵 가드는 지금의 final.md를 판정한 09_finalize.json에만 유효하다).
 - **새로 시작**: 미완료 run은 그대로 두고(정리하지 않는다), 아래 배너부터 새 `run_id`로 정상 진행한다.
 
 이 재개 흐름은 뒤에 별도로 설명하는 `보류 재시도`(이미 **완료된** run의 게이트 보류 항목만 골라 재시도)와는 다른 트리거다 — 헷갈리지 않도록 Phase 9 뒤에서 구분해 다룬다.
@@ -137,6 +137,10 @@ STRICT=0         # 사용자가 "정밀 모드"/"--strict"라고 했으면 이 �
                  # (STRICT=0)이 경제 모드다 — 파일당 monolith LLM 1콜이 상한이고, 게이트가 문제를
                  # 잡으면 추가 콜 대신 "$D/pending.txt"에 보류로 기록한다(Phase 7 게이트 표 참고).
                  # STRICT=1은 이 상한을 해제하고 diagnostician·자동 재윤문·finalize 승급을 그대로 켠다.
+SLOP=1           # 사용자가 "슬롭 검사 빼줘"/"초안 관문 꺼줘"라고 했으면 이 줄을 SLOP=0 으로 바꿔 쓴다.
+                 # 기본값(SLOP=1)이 초안 관문 켜짐이다 — Phase 4의 스캔·지침 주입과 Phase 6·7의 추출·
+                 # 대조가 돌고 Phase 8·9에 항목이 실린다. SLOP=0이면 그 전부를 건너뛰고 보고서에
+                 # "초안 관문: 꺼짐"만 남긴다. LLM 콜 수는 어느 쪽이든 늘지 않는다(monolith 편승).
 
 # Phase 4~7은 매번 새 Bash 호출(새 셸)이라 위 세 변수가 자동으로 이어지지 않는다 — run
 # 전체에 공통인 상태 파일로 남겨, 이후 각 Phase가 이 파일을 소싱해서 값을 되살린다.
@@ -145,6 +149,7 @@ cat > "_workspace/docs-{run_id}/options.env" <<EOF
 HEADING_EDIT=${HEADING_EDIT}
 CONDENSE=${CONDENSE}
 STRICT=${STRICT}
+SLOP=${SLOP}
 EOF
 
 # 승인된 대상 목록을 이번 run의 target 소스오브트루스로 남긴다 — {slug}/ 디렉토리는 Phase 3가
@@ -242,13 +247,26 @@ fi
 python3 "$HD/scripts/llm_signature.py" score --src "{원본경로}" \
   >> "$D/02_diagnosis.md"          # 사람이 읽는 표가 진단문 뒤에 붙는다
 
+# 초안 관문(게이트 S) — 원본 기준 스캔 표를 붙이고, 이어서 LLM 층 지침을 붙인다.
+# 순서는 docs-profile → 반복 구절 → 지문 표 → 초안 관문 표 → 초안 관문 지침 → 옵션 상태다.
+# SLOP=0이면 둘 다 건너뛴다. lexicon 이 없으면 스크립트가 안내 한 줄만 내고 exit 0 한다.
+if [ "${SLOP:-1}" = "1" ]; then
+  printf '\n## 초안 관문 (게이트 S) — 원본 기준, 수정 안 함\n\n' >> "$D/02_diagnosis.md"
+  python3 "$HD/scripts/slop_scan.py" scan --src "{원본경로}" \
+    >> "$D/02_diagnosis.md" || true
+  printf '\n' >> "$D/02_diagnosis.md"
+  cat "$HD/references/slop-gate.md" >> "$D/02_diagnosis.md"
+fi
+
 HEADING_EDIT_LABEL=$([ "${HEADING_EDIT:-0}" = "1" ] && echo "켜짐" || echo "꺼짐")
 CONDENSE_LABEL=$([ "${CONDENSE:-1}" = "1" ] && echo "켜짐" || echo "꺼짐")
+SLOP_LABEL=$([ "${SLOP:-1}" = "1" ] && echo "켜짐" || echo "꺼짐")
 cat >> "$D/02_diagnosis.md" <<EOF
 
 ## 이번 실행의 옵션 상태
 헤딩 편집: ${HEADING_EDIT_LABEL}
 축약: ${CONDENSE_LABEL}
+초안 관문: ${SLOP_LABEL}
 EOF
 
 # 재개: 위에서 보존해둔 diagnostician 섹션이 있으면 다시 붙인다 — 콜을 다시 부를 필요가 없다.
@@ -283,7 +301,7 @@ fi
 **재개 스킵 가드.** `humanize-monolith`를 호출하기 전에 먼저 `$D/final.md`가 이미 있고 비어 있지 않은지 확인한다 — 있다면 이전 라운드에서 이미 이 콜을 마쳤다는 뜻이므로 **콜을 생략**하고 곧바로 Phase 6으로 넘어간다. 게이트 실패로 인한 **의도적 재시도**(정밀 모드의 자동 재윤문, `보류 재시도`의 rewrite 액션)는 이 가드를 우회해야 하므로, 그 경우 재시도 지시마다 재시도 전에 다음 완전한 스니펫을 실행하라고 명시돼 있다(아래 게이트 A·C 표, `보류 재시도` 절 참고):
 
 ```bash
-D="$PWD/_workspace/docs-{run_id}/{slug}"; rm -f "$D/final.md" "$D/09_finalize.json" "$D/final_pre_finalize.md"
+D="$PWD/_workspace/docs-{run_id}/{slug}"; rm -f "$D/final.md" "$D/09_finalize.json" "$D/final_pre_finalize.md" "$D/11_slop.json" "$D/11_slop_judge.json"
 ```
 
 세 가지를 지키지 않으면 스테일 아티팩트 사고로 이어진다. **(1) `$D` 재선언 필수** — 재시도 지시가 실행되는 시점은 이전 Phase들과 다른 새 Bash 호출(새 셸)이라 `$D`가 비어 있다. `$D` 재선언 없이 `rm -f "$D/final.md"`만 실행하면 사실상 `rm -f /final.md`가 되어 대상이 없으니 조용히 exit 0으로 끝나고, 이 스킵 가드는 스테일 `final.md`를 그대로 보고 방금 요청한 재시도 콜까지 생략해 버린다 — v1.1에서 없앤 것과 같은 종류의 사고다. **(2) `09_finalize.json`·`final_pre_finalize.md`도 함께 지운다**(`final_pre_finalize.md`는 `humanize-finalizer`가 보정 전 `final.md`를 백업해 두는 파일이다) — `final.md`만 지우면, 이번 재윤문으로 새로 생길 `final.md`가 아니라 **이전 라운드의 final.md를 판정한** 낡은 finalize 결과가 남는다. finalizer 스킵 가드(게이트 B 절, `보류 재시도` 4단계)는 `09_finalize.json`이 **지금의 `final.md`를 판정한 것인지 확인하지 않고** 존재 여부만 보므로, 재윤문 이후 실제로는 다시 필요해진 finalize 콜이 낡은 json 때문에 조용히 생략될 수 있다(finalize → 게이트 C 보류 → rewrite → 새 final.md → 게이트 B 보류 → 낡은 09_finalize.json이 finalize 콜을 막는 무한 루프로 이어질 수 있다). **모든 스킵 가드는 그 가드가 확인하는 산출물을 실제로 만든 콜에만 유효하다** — 산출물이 갱신되면 그 가드용 파일도 함께 지운다.
@@ -313,6 +331,7 @@ fi
 # Phase 5와 이 Phase는 서로 다른 Bash 호출(새 셸)이라 $D/$HD 를 다시 채워야 한다.
 D="$PWD/_workspace/docs-{run_id}/{slug}"
 HD="{이 스킬의 base directory}"
+. "$PWD/_workspace/docs-{run_id}/options.env" || { echo "ERROR: options.env 없음 — Phase 1의 옵션 해석 블록을 먼저 실행하라"; exit 1; }
 
 # Phase 7에서 이전 라운드가 candidate.path·pending.txt를 남겼을 수 있다 — Phase 6은
 # 재시도 루프의 시작점(HEADING_EDIT 값과 무관하게 매번 실행됨. 정밀 모드의 자동 재시도든
@@ -322,6 +341,14 @@ HD="{이 스킬의 base directory}"
 # Phase 8에 잘못 제공되지 않고, `보류 재시도`로 재평가할 때도 Phase 9가 이전 라운드의
 # 스테일 pending.txt를 이번 라운드 결과와 섞어 읽지 않는다(Phase 7이 이번 판정으로 다시 쓴다).
 rm -f "$D/candidate.path" "$D/pending.txt"
+
+# 초안 관문 — 아래 python 블록이 HUMANIZE-SUMMARY 를 통째로 잘라내므로, monolith 편승
+# 판정은 그 전에 뽑아 둔다. 순서가 뒤집히면 판정이 있었는지조차 알 수 없다.
+# 블록이 없거나 slop_findings 키가 없으면 llm_monolith 는 null 이고, 어느 쪽이든 exit 0 이다.
+if [ "${SLOP:-1}" = "1" ]; then
+  python3 "$HD/scripts/slop_scan.py" extract-llm \
+    --final "$D/final.md" --out "$D/11_slop.json" || true
+fi
 
 python3 - "$D/final.md" "$D/final_prose.md" <<'PY'
 import re, sys
@@ -370,7 +397,7 @@ Phase 6과 Phase 7은 서로 다른 Bash 호출(새 셸)이라 위 `$REWRITE_EXI
 
 ### Phase 7 — 게이트 (기본 3중, 헤딩 옵션 켜지면 4중) (Bash, LLM 콜 아님)
 
-기본 세 게이트(A·B·C)에서 채택 금지 판정(주로 exit 2)이 하나라도 나오면 원본 유지다 — exit 1의 후속은 게이트별 표를 따른다. 헤딩 옵션이 켜져 있으면 게이트 D가 B와 C 사이에 추가로 실행되고, 그 결과로 **채택 후보 파일**(`$CANDIDATE`)이 확정된다. `$CANDIDATE`는 여기서 딱 한 번만 계산한다 — 게이트 C의 `--after`가 그대로 재사용한다(같은 판단을 여러 곳에 따로 흩어놓지 않는다). Phase 8은 별도 Bash 호출(새 셸)이라 이 `$CANDIDATE` 셸 변수를 그대로 물려받지 못한다 — 그래서 이 블록 마지막에 `$D/candidate.path` 파일로 적어 넘긴다(Phase 1의 `options.env`와 같은 이유, 같은 해법). 게이트가 보류를 남길 때 쓰는 `$D/pending.txt`도 이 블록에서 정의된다 — 각 줄의 포맷은 `gate=<A|B|C> exit=<n> action=<rewrite|finalize|none> reason=<사유>`이고, `reason=`은 항상 마지막 필드라 공백을 포함해도 된다(그 줄 전체를 사람이 읽는 한 문장으로 다루지, `=` 뒤를 다시 파싱하지 않는다).
+기본 세 게이트(A·B·C)에서 채택 금지 판정(주로 exit 2)이 하나라도 나오면 원본 유지다 — exit 1의 후속은 게이트별 표를 따른다. 헤딩 옵션이 켜져 있으면 게이트 D가 B와 C 사이에 추가로 실행되고, 그 결과로 **채택 후보 파일**(`$CANDIDATE`)이 확정된다. `$CANDIDATE`는 여기서 딱 한 번만 계산한다 — 게이트 C의 `--after`가 그대로 재사용한다(같은 판단을 여러 곳에 따로 흩어놓지 않는다). Phase 8은 별도 Bash 호출(새 셸)이라 이 `$CANDIDATE` 셸 변수를 그대로 물려받지 못한다 — 그래서 이 블록 마지막에 `$D/candidate.path` 파일로 적어 넘긴다(Phase 1의 `options.env`와 같은 이유, 같은 해법). 게이트가 보류를 남길 때 쓰는 `$D/pending.txt`도 이 블록에서 정의된다 — 각 줄의 포맷은 `gate=<A|B|C|S> exit=<n> action=<rewrite|finalize|none> reason=<사유>`이고, `reason=`은 항상 마지막 필드라 공백을 포함해도 된다(그 줄 전체를 사람이 읽는 한 문장으로 다루지, `=` 뒤를 다시 파싱하지 않는다).
 
 ```bash
 # Phase 6과 이 Phase는 서로 다른 Bash 호출(새 셸)이라 $D/$HD/$HK 를 다시 채워야 한다.
@@ -388,7 +415,7 @@ if [ -z "$HK" ]; then
   done
 fi
 . "$PWD/_workspace/docs-{run_id}/options.env" || { echo "ERROR: options.env 없음 — Phase 1의 옵션 해석 블록을 먼저 실행하라"; exit 1; }
-echo "OPTIONS: HEADING_EDIT=$HEADING_EDIT CONDENSE=$CONDENSE STRICT=$STRICT"   # 재개 시에도 이번 라운드에 실제로 적용 중인 옵션 값을 매번 눈에 보이게 남긴다(Phase 0 참고)
+echo "OPTIONS: HEADING_EDIT=$HEADING_EDIT CONDENSE=$CONDENSE STRICT=$STRICT SLOP=${SLOP:-1}"   # 재개 시에도 이번 라운드에 실제로 적용 중인 옵션 값을 매번 눈에 보이게 남긴다(Phase 0 참고)
 
 # 게이트 A — 구조 무결성 (humanize-docs 고유). restored.md(헤딩 원문 유지본) 기준.
 python3 "$HD/scripts/md_shield.py" verify \
@@ -460,6 +487,52 @@ fi
 # 사실 자체는 채택 승인이 아니다. 실제 채택 여부는 여전히 게이트 C(및 A·B·D)의 종료 코드가
 # 결정한다; candidate.path는 오직 "Phase 8이 무엇을 diff·적용해야 하는가"만 가리킨다.
 echo "$CANDIDATE" > "$D/candidate.path"
+```
+
+#### 초안 관문 (게이트 S) — 고지만, 수정 없음
+
+`candidate.path` 를 쓴 직후, 작성자 반복 구절 스캔 앞이 이 게이트의 자리다. 채택 여부와 exit 에는 기여하지 않는다 — 사람에게 보여주는 것이 전부다.
+
+**정밀 모드에서만 판정자를 부른다.** `STRICT=1` 이고 `SLOP=1` 이면 `wwe-slop-judge` 를 `Agent` 도구로 호출한다. 스킵 가드는 `$D/11_slop_judge.json` 존재다 — 있으면 이전 라운드에서 이미 낸 콜이므로 생략하고 `재개: 11_slop_judge.json 존재 — judge 콜 생략` 을 로그로 남긴다. 경제 모드(`STRICT=0`, 기본)에서는 이 콜을 하지 않는다.
+
+호출 직전에 `cat "$D/candidate.path"` 를 한 번 돌려 candidate 절대경로를 읽어 둔다. Agent 도구 호출은 셸 명령이 아니라 셸 변수가 넘어가지 않으므로, 아래 네 자리에는 **그때 확인한 절대경로 문자열을 그대로 채워 넣는다**(Phase 5의 `quick_rules_path` 를 채우는 방식과 같다).
+
+- 원본: `{원본경로}`
+- candidate: `{candidate 절대경로 — 방금 읽은 `candidate.path` 의 내용}`
+- 지침: `{이 스킬의 base directory}/references/slop-gate.md`
+- 산출: `{절대경로}/_workspace/docs-{run_id}/{slug}/11_slop_judge.json`
+
+호출이 실패하면 monolith 판정을 그대로 쓴다 — 재호출하지 않는다.
+
+```bash
+# 위 게이트 블록과 다른 Bash 호출(새 셸)일 수 있으므로 $D/$HD/$CANDIDATE 를 다시 채운다.
+D="$PWD/_workspace/docs-{run_id}/{slug}"
+HD="{이 스킬의 base directory}"
+CANDIDATE=$(cat "$D/candidate.path")
+. "$PWD/_workspace/docs-{run_id}/options.env" || { echo "ERROR: options.env 없음 — Phase 1의 옵션 해석 블록을 먼저 실행하라"; exit 1; }
+
+# 결정적 층 대조 + LLM 층 병합 → 11_slop.json 완성. judge 산출물이 있으면 그것이 llm 이 되고
+# monolith 것은 llm_monolith 로 남는다. 한 건이라도 발동하면 pending.txt 에 gate=S 한 줄.
+# action=none 이라 "재시도 불가, 사유만 표시"로 Phase 9 §6과 `보류 재시도`가 새 코드 없이 처리한다.
+# 실패해도 진행하되(|| true) 사유는 stderr 에 한 줄 남긴다 — 조용히 넘어가면 Phase 8이
+# "초안 관문 미실행"만 찍고 왜 그런지는 아무 데도 안 남는다(반복 구절 스캔과 같은 처리).
+if [ "${SLOP:-1}" = "1" ]; then
+  # 배열로 넘긴다. 비따옴표 $JUDGE_ARG 확장은 경로에 공백이 있으면 인자가 쪼개진다.
+  JUDGE_ARGS=()
+  [ -s "$D/11_slop_judge.json" ] && JUDGE_ARGS=(--judge "$D/11_slop_judge.json")
+  python3 "$HD/scripts/slop_scan.py" compare \
+    --before "{원본경로}" --after "$CANDIDATE" \
+    --llm "$D/11_slop.json" --out "$D/11_slop.json" \
+    --pending "$D/pending.txt" "${JUDGE_ARGS[@]}" \
+    || echo "WARN: slop_scan.py compare 실패 — 초안 관문 미실행으로 보고된다" >&2
+fi
+```
+
+```bash
+# 이 블록도 새 셸이라 $D/$HD/$CANDIDATE 를 다시 채운다.
+D="$PWD/_workspace/docs-{run_id}/{slug}"
+HD="{이 스킬의 base directory}"
+CANDIDATE=$(cat "$D/candidate.path")
 
 # 게이트 C 옆 — 윤문 후 시드 잔존 검사 (exit 영향 없음, 보고 전용)
 AR_SEED="${HD}/references/author-tics.txt"
@@ -481,7 +554,7 @@ fi
 |---|---|---|
 | 0 | 구조 완전 보존 | 진행 |
 | 1 | 경고 — 헤딩 자동복구 발생 / 숫자 소실 / 문단수 변동 | 진행하되 **해당 항목을 사용자에게 고지** |
-| 2 | 실패 — 토큰 소실·중복, 코드·표·링크 변형, 목록 구조 파괴 | **채택 금지.** **경제 모드(기본)**: 재윤문 없이 원본 유지 — `$D/pending.txt`에 `gate=A exit=2 action=rewrite reason=게이트 A 실패, 재윤문 필요`를 기록해 Phase 9 보류 목록에 올린다(위 Phase 7 스크립트가 자동으로 남긴다). **정밀 모드(`STRICT=1`)**: 기존처럼 1회 재윤문(Phase 5 재시도, 토큰·구조 불가침을 재강조 — 재시도 전 `D="$PWD/_workspace/docs-{run_id}/{slug}"; rm -f "$D/final.md" "$D/09_finalize.json" "$D/final_pre_finalize.md"`를 실행해 스킵 가드를 비활성화한다. 전체 스니펫과 이유는 Phase 5 절 참고). 재차 2면 그 파일은 원본 유지하고 사유 보고 |
+| 2 | 실패 — 토큰 소실·중복, 코드·표·링크 변형, 목록 구조 파괴 | **채택 금지.** **경제 모드(기본)**: 재윤문 없이 원본 유지 — `$D/pending.txt`에 `gate=A exit=2 action=rewrite reason=게이트 A 실패, 재윤문 필요`를 기록해 Phase 9 보류 목록에 올린다(위 Phase 7 스크립트가 자동으로 남긴다). **정밀 모드(`STRICT=1`)**: 기존처럼 1회 재윤문(Phase 5 재시도, 토큰·구조 불가침을 재강조 — 재시도 전 `D="$PWD/_workspace/docs-{run_id}/{slug}"; rm -f "$D/final.md" "$D/09_finalize.json" "$D/final_pre_finalize.md" "$D/11_slop.json" "$D/11_slop_judge.json"`를 실행해 스킵 가드를 비활성화한다. 전체 스니펫과 이유는 Phase 5 절 참고). 재차 2면 그 파일은 원본 유지하고 사유 보고 |
 | 3 | 판정 불가 | 입력 확인 후 재시도. 게이트를 건너뛰지 않는다 |
 
 게이트 B는 `humanize-korean`의 판정표와 동일(0 수렴 / 1 경고+승급 / 2 중단·롤백 / 3 판정불가 — "승급"의 의미가 아래처럼 모드별로 다르다: 경제 모드는 보류 기록, 정밀 모드는 finalize 자동 호출). exit 1이면 `--json` 출력의 `golden` 배열(`[{"code","message"}, ...]`)을 확인한다.
@@ -505,8 +578,8 @@ fi
 | 게이트 C exit | 판정 | 후속 |
 |---|---|---|
 | 0 | 지문 하락 확인 (또는 원문이 애초에 깨끗함) | 진행 |
-| 1 | 하락 부족 — 문장은 다듬였지만 **레이아웃 지문이 그대로** | **경제 모드(기본)**: 재실행 없이 그대로 채택하되 "지문 잔존"을 고지한다(정밀 모드에서 재시도 후에도 흔히 도달하던 결과와 동일 — 이제는 재시도 없이 바로 이 결과를 낸다). `$D/pending.txt`에 `gate=C exit=1 action=rewrite reason=지문 잔존, 재윤문 권장`을 기록해 **보류-권장**으로 Phase 9에 올린다(위 Phase 7 스크립트가 자동으로 남긴다). **정밀 모드**: 발동 중인 L 패턴만 명시해 Phase 5를 1회 재실행(재시도 전 `D="$PWD/_workspace/docs-{run_id}/{slug}"; rm -f "$D/final.md" "$D/09_finalize.json" "$D/final_pre_finalize.md"`. 전체 스니펫과 이유는 Phase 5 절 참고). 재차 1이면 채택하되 "지문 잔존"을 고지 |
-| 2 | **역행 — 윤문이 지문을 새로 심었다** | **채택 금지.** **경제 모드(기본)**: 재실행 없이 원본 유지 — `$D/pending.txt`에 `gate=C exit=2 action=rewrite reason=지문 역행, 재윤문 필요`를 기록해 보류 목록에 올린다. **정밀 모드**: 새로 발동한 L 패턴을 지목해 재실행(재시도 전 `D="$PWD/_workspace/docs-{run_id}/{slug}"; rm -f "$D/final.md" "$D/09_finalize.json" "$D/final_pre_finalize.md"`). 재차 2면 원본 유지 |
+| 1 | 하락 부족 — 문장은 다듬였지만 **레이아웃 지문이 그대로** | **경제 모드(기본)**: 재실행 없이 그대로 채택하되 "지문 잔존"을 고지한다(정밀 모드에서 재시도 후에도 흔히 도달하던 결과와 동일 — 이제는 재시도 없이 바로 이 결과를 낸다). `$D/pending.txt`에 `gate=C exit=1 action=rewrite reason=지문 잔존, 재윤문 권장`을 기록해 **보류-권장**으로 Phase 9에 올린다(위 Phase 7 스크립트가 자동으로 남긴다). **정밀 모드**: 발동 중인 L 패턴만 명시해 Phase 5를 1회 재실행(재시도 전 `D="$PWD/_workspace/docs-{run_id}/{slug}"; rm -f "$D/final.md" "$D/09_finalize.json" "$D/final_pre_finalize.md" "$D/11_slop.json" "$D/11_slop_judge.json"`. 전체 스니펫과 이유는 Phase 5 절 참고). 재차 1이면 채택하되 "지문 잔존"을 고지 |
+| 2 | **역행 — 윤문이 지문을 새로 심었다** | **채택 금지.** **경제 모드(기본)**: 재실행 없이 원본 유지 — `$D/pending.txt`에 `gate=C exit=2 action=rewrite reason=지문 역행, 재윤문 필요`를 기록해 보류 목록에 올린다. **정밀 모드**: 새로 발동한 L 패턴을 지목해 재실행(재시도 전 `D="$PWD/_workspace/docs-{run_id}/{slug}"; rm -f "$D/final.md" "$D/09_finalize.json" "$D/final_pre_finalize.md" "$D/11_slop.json" "$D/11_slop_judge.json"`). 재차 2면 원본 유지 |
 | 3 | 판정 불가 | 입력 확인 후 재시도 |
 
 게이트 C의 exit 2가 이 스킬의 존재 이유 중 하나다. 윤문하는 것도 Claude이므로 **없던 이모지·볼드리드 불릿·요약 문단을 새로 심는 사고**가 실제로 난다. 룰로 부탁하지 말고 측정해서 막는다.
@@ -548,6 +621,48 @@ for r in data.get("renamed", []):
 PY
 fi
 
+# 초안 관문 — diff·승인보다 먼저 찍는다. 판정이 승인 뒤에 오면 늦다(헤딩 표와 같은 원칙).
+# 상위 3건은 LLM 판정을 먼저 싣고 모자라면 결정적 층 히트로 채운다.
+#
+# 실행 여부는 파일 존재가 아니라 `summary` 키로 판정한다. Phase 6의 extract-llm 은
+# monolith 가 블록을 안 냈어도 11_slop.json 을 만들기 때문에, 파일이 있다는 사실은
+# "compare 가 돌았다"의 증거가 못 된다. summary 는 compare 만 쓴다.
+if [ "${SLOP:-1}" = "1" ]; then
+  python3 - "$D/11_slop.json" <<'PY'
+import json, os, sys
+path = sys.argv[1]
+d = None
+if os.path.exists(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            d = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        d = None
+if not isinstance(d, dict) or "summary" not in d:
+    print("초안 관문: 미실행 (compare 실패 또는 SLOP=0)")
+    raise SystemExit(0)
+s = d["summary"]
+llm = d.get("llm") or {}
+findings = llm.get("findings", [])
+print(
+    f"초안 관문 (수정 안 함): 확신 {s.get('S1', 0)} · 필러 {s.get('S2', 0)} · 미검증 {s.get('S3', 0)}"
+    f" | 윤문 유입 {s.get('introduced', 0)} | LLM 판정 {len(findings)}건"
+)
+if not findings and d.get("note"):
+    print(f"  (LLM 판정 누락 — {d['note']})")
+rows = [(f.get("item", "?"), None, f.get("origin", "원문"), f.get("quote", ""), f.get("why", ""))
+        for f in findings[:3]]
+label = {"S1": "확신", "S2": "필러", "S3": "미검증"}
+for h in d.get("scan", {}).get("after", {}).get("hits", []):
+    if len(rows) >= 3:
+        break
+    rows.append((label.get(h["id"], h["id"]), h.get("line"), "원문", h.get("quote", ""), h.get("term", "")))
+for item, line, origin, quote, why in rows:
+    where = f"줄 {line}, {origin}" if line else origin
+    print(f'- {item} ({where}): "{quote}" — {why}')
+PY
+fi
+
 diff -u "{원본경로}" "$CANDIDATE" | head -120
 diff <(grep -c '' "{원본경로}") <(grep -c '' "$CANDIDATE")
 ```
@@ -578,6 +693,7 @@ git 저장소면 `git status --short`로 해당 파일이 이미 dirty한지 확
 2. 파일별 표: 경로 / route / 변경률 / 등급 / **지문 before→after** / 게이트 A·B·C(·D, 헤딩 옵션 켜졌을 때) / 채택 여부
 3. **걷어낸 레이아웃 지문**: 파일별로 어떤 L 패턴을 몇 건 제거했는지 (볼드리드 불릿 7건, 상태 이모지 12개, 마무리 요약 섹션 1개 …)
 4. **남은 지문 (수정 안 함)**: report-only 축에서 발동 중인 것 — 표 밀도, 섹션 골격 균질성, 삼분 편향 등. 구조를 바꿔야 고쳐지므로 사람이 판단할 몫이라고 명시한다
+4b. **초안 관문 (수정 안 함)**: `SLOP=1`일 때만. 각 `{slug}/11_slop.json`을 읽어 파일별로 확신·필러·미검증 건수, 윤문 유입 건수, 상위 발췌 3건(LLM 판정 우선, 모자라면 결정적 층 히트로 채움)을 싣는다. 마지막에 "이 게이트는 고치지 않는다. 표면 윤문으로는 슬롭이 글이 되지 않는다는 게 이 항목의 전제다" 한 줄과 출처 링크(https://ahrefs.com/blog/how-we-use-ai-without-making-ai-slop/)를 붙인다. **실행 여부는 파일 존재가 아니라 `summary` 키로 판정한다**(Phase 8과 같은 기준 — Phase 6의 `extract-llm`은 monolith가 블록을 안 내도 이 파일을 만들므로 파일 존재는 증거가 아니다): `summary`가 없으면 그 파일은 "초안 관문 미실행 (compare 실패)"으로 적고 건수 표는 생략한다. `summary`는 있는데 `llm`이 `null`이면 "LLM 판정 누락"으로 적고, 최상위 `note`가 있으면 그 사유(`HUMANIZE-SUMMARY 블록 없음` / `slop_findings 키 없음`)를 괄호에 그대로 옮긴다. `SLOP=0`이면 이 항목 대신 "초안 관문: 꺼짐" 한 줄만 남긴다
 5. 채택 실패 파일과 그 사유
 6. **보류 목록**: 파일별로 (게이트, 사유, 권장 다음 행동: 재윤문/finalize, 예상 추가 LLM 콜 수 — 기본 1회). 각 `{slug}/pending.txt`를 모아 만든다(`action=none` 항목은 재시도 불가로 표시). `보류 재시도`로 이 목록에서 선택 실행할 수 있다고 안내를 붙인다
 7. 주요 문장 변경 하이라이트 3~5건 (before → after 한 줄씩)
@@ -592,8 +708,8 @@ Phase 0의 재개 감지(중단된 실행을 이어가는 것)와는 다르다 �
 1. `Glob(pattern="_workspace/docs-*/REPORT.md")`로 가장 최근 run(run_id 최댓값)을 찾는다. 사용자가 특정 run_id나 파일을 지정했으면 그걸 우선한다.
 2. 그 run 아래 `{slug}/pending.txt`가 있는 파일만 모아 보류 목록을 만든다. `action=rewrite`/`action=finalize`만 재시도 대상이다 — `action=none`(게이트 B exit 2처럼 애초에 추가 콜이 없는 항목)은 목록에는 보이되 사유만 표시하고 선택지에서 제외한다. **`08_applied.txt`가 `제자리`로 기록된 파일도 제외한다** — `{원본경로}`가 이미 윤문본으로 덮여 있어, 재시도하면 게이트 A/C와 diff가 전부 갱신된 원본을 기준으로 판정해 콜만 낭비하고, 제자리 적용을 한 번 더 하면 `.bak`이 첫 윤문본으로 덮여 진짜 원본을 잃는다. 사유만 표시한다(재시도하려면 원본을 `.bak`에서 되돌린 뒤 새 run으로).
 3. AskUserQuestion으로 "어떤 보류 파일을 재시도할까요?"를 묻는다 — 선택지는 파일 목록 + "전체"(**전체**는 선택 가능한 항목, 즉 `action=rewrite`/`action=finalize`가 있는 파일 전부를 뜻한다 — `action=none`만 있는 파일은 재시도 대상이 없으므로 전체에도 포함하지 않는다).
-4. 선택된 파일마다 먼저 `options.env`를 소싱해 `HEADING_EDIT`/`CONDENSE`/`STRICT` 세 값을 확인한다 — 이 트리거는 Phase 0의 재개 감지도 Phase 1의 옵션 해석도 거치지 않으므로, 여기서 읽지 않으면 Claude가 이 값을 알 방법이 없고 Phase 5의 `HEADING_CLAUSE`가 기본값(`HEADING_EDIT=0`)으로 잘못 골라질 수 있다. 그다음 `pending.txt`를 읽는다. **한 파일에 여러 줄이 있으면(예: 게이트 B exit 1의 finalize 권장과 게이트 C exit 1의 rewrite 권장이 같은 라운드에 함께 남는 경우가 흔하다) `rewrite` > `finalize` 순으로 하나만 고른다** — rewrite는 Phase 5를 다시 돌려 final.md 자체를 새로 만들므로, 같은 라운드에 finalize까지 같이 하면 finalize가 판정한 final.md가 곧바로 rewrite로 대체돼 무의미하다. 고르지 않은 나머지 항목은 이번 라운드에서는 미루고, Phase 6~9가 다시 돈 뒤 그 시점 게이트 결과로 pending.txt가 다시 갱신되면 다음 `보류 재시도`에서 다룬다. 고른 action에 따라 **누락된 LLM 콜 딱 하나만** 낸다:
-   - `action=rewrite` — 먼저 `D="$PWD/_workspace/docs-{run_id}/{slug}"; rm -f "$D/final.md" "$D/09_finalize.json" "$D/final_pre_finalize.md"`를 실행한다(세 파일을 함께 지우는 이유는 Phase 5 절 참고 — final.md만 지우면 낡은 09_finalize.json이 이후 정말 필요한 finalize 콜을 조용히 막을 수 있다). 그다음 Phase 5를 다시 실행한다(quick_rules_path·genre_hint 등은 그대로, `$D/01_input_with_metrics.txt`도 Phase 3·4 산출물이 이미 디스크에 있으므로 다시 만들지 않는다).
+4. 선택된 파일마다 먼저 `options.env`를 소싱해 `HEADING_EDIT`/`CONDENSE`/`STRICT`/`SLOP` 네 값을 확인한다 — 이 트리거는 Phase 0의 재개 감지도 Phase 1의 옵션 해석도 거치지 않으므로, 여기서 읽지 않으면 Claude가 이 값을 알 방법이 없고 Phase 5의 `HEADING_CLAUSE`가 기본값(`HEADING_EDIT=0`)으로 잘못 골라질 수 있다. 그다음 `pending.txt`를 읽는다. **한 파일에 여러 줄이 있으면(예: 게이트 B exit 1의 finalize 권장과 게이트 C exit 1의 rewrite 권장이 같은 라운드에 함께 남는 경우가 흔하다) `rewrite` > `finalize` 순으로 하나만 고른다** — rewrite는 Phase 5를 다시 돌려 final.md 자체를 새로 만들므로, 같은 라운드에 finalize까지 같이 하면 finalize가 판정한 final.md가 곧바로 rewrite로 대체돼 무의미하다. 고르지 않은 나머지 항목은 이번 라운드에서는 미루고, Phase 6~9가 다시 돈 뒤 그 시점 게이트 결과로 pending.txt가 다시 갱신되면 다음 `보류 재시도`에서 다룬다. 고른 action에 따라 **누락된 LLM 콜 딱 하나만** 낸다:
+   - `action=rewrite` — 먼저 `D="$PWD/_workspace/docs-{run_id}/{slug}"; rm -f "$D/final.md" "$D/09_finalize.json" "$D/final_pre_finalize.md" "$D/11_slop.json" "$D/11_slop_judge.json"`를 실행한다(세 파일을 함께 지우는 이유는 Phase 5 절 참고 — final.md만 지우면 낡은 09_finalize.json이 이후 정말 필요한 finalize 콜을 조용히 막을 수 있다). 그다음 Phase 5를 다시 실행한다(quick_rules_path·genre_hint 등은 그대로, `$D/01_input_with_metrics.txt`도 Phase 3·4 산출물이 이미 디스크에 있으므로 다시 만들지 않는다).
    - `action=finalize` — `$D/09_finalize.json`이 이미 있으면(드문 경우) 그 스킵 가드가 자동으로 콜을 생략한다 — 단 이 가드는 **지금의 final.md를 판정한 09_finalize.json에만** 유효하다. 수동으로 final.md를 건드렸다면 09_finalize.json도 함께 지우고 다시 호출한다. 산출물이 없으면 `humanize-finalizer`를 1콜 실행한다(입력은 `01_input.txt` ↔ `final.md`).
 5. 해당 파일에 대해 Phase 6~9를 다시 실행한다. Phase 3(마스킹)·Phase 4(지침 결합)의 산출물은 이미 있으므로 다시 만들지 않는다 — "LLM 콜만 생략/추가하고 Bash 단계는 무조건 다시 돈다"는 재개 원칙이 여기서도 그대로 적용된다.
 6. Phase 6a의 `rm -f "$D/candidate.path" "$D/pending.txt"`가 이번에도 그대로 실행돼, 이전 라운드의 스테일 `pending.txt`가 이번 재평가 결과와 섞이지 않는다 — Phase 7이 이번 판정으로 다시 쓴다(해소됐으면 아무것도 안 남고, 여전히 걸리면 새 사유로 다시 남는다).
@@ -603,18 +719,19 @@ Phase 0의 재개 감지(중단된 실행을 이어가는 것)와는 다르다 �
 
 - **(기본값) 경제 모드** — 파일당 monolith LLM 1콜이 상한이다. 게이트가 문제를 잡으면 추가 콜 대신 `$D/pending.txt`에 보류로 기록하고 Phase 9 보고서의 보류 목록에 올린다. `정밀 모드`가 이 상한을 해제한다
 - `이어서` / `재개` — 중단된 실행을 이어서 진행한다(Phase 0의 재개 감지 참고). 재개 중에는 옵션을 바꿀 수 없다 — 다른 옵션이 필요하면 새로 시작해야 한다
-- `보류 재시도` / `보류 파일 재시도` — 완료된 run의 보류 목록에서 선택한 파일만 재시도한다(Phase 9 뒤 "보류 재시도" 절 참고). 파일당 추가 LLM 콜은 최대 1회다
+- `보류 재시도` / `보류 파일 재시도` — 완료된 run의 보류 목록에서 선택한 파일만 재시도한다(Phase 9 뒤 "보류 재시도" 절 참고). 파일당 추가 LLM 콜은 최대 1회다(정밀 모드에서 초안 관문이 켜져 있으면 재윤문한 candidate를 다시 판정해야 하므로 `wwe-slop-judge` 1회가 더 붙어 최대 2회다)
 - `장르: 리포트|블로그|공적` — 기본 리포트
 - `강도: 보수|기본|적극` — 기본값 기본. 참조형 문서는 보수 권장
 - `이모지 살려줘` — L6 비활성화 (기본은 **상태·장식 이모지 제거**)
 - `요약 섹션 남겨줘` — L8·L9 비활성화. 서두 요약 박스와 마무리 정리 섹션을 건드리지 않는다
-- `지문만 봐줘` / `점수만` — 윤문 없이 `llm_signature.py score`만 돌려 문서별 지문 리포트를 낸다. 대상 선별에 유용하다
+- `지문만 봐줘` / `점수만` — 윤문 없이 `llm_signature.py score`만 돌려 문서별 지문 리포트를 낸다. 대상 선별에 유용하다. `SLOP=1`이면 같은 파일에 `slop_scan.py scan --src {원본경로}`도 이어 돌려 초안 관문 표를 함께 낸다(둘 다 LLM 콜 없음)
 - `표도 손봐줘` — `--no-protect-tables`. 표 셀 산문도 윤문 대상에 넣는다. 정렬·행수는 여전히 검증한다
 - `정밀 모드` / `--strict` — **경제 모드 해제.** 파일당 monolith 1콜 상한을 풀고 기존(v1.1 이전)과 동일하게 동작한다: `route_hint=heavy`면 diagnostician 1콜 추가, 게이트 A·C 실패 시 자동 재윤문, 게이트 B exit 1이면 finalize 자동 승급(경제 모드의 "기록만"과 달리 실제 호출. 단 HEADING_EDIT=1의 heading_lost/heading_absorbed 면제는 그대로 유지된다 — 게이트 B 절 참고). `options.env`에 `STRICT=1`로 기록되어 이후 모든 Phase가 이 값을 읽는다
 - `지시 파일도 포함` — caution 분류의 CLAUDE.md·AGENTS.md류를 대상에 넣는다
 - `구조도 바꿔도 돼` — (**비권장 예외**) `verify --allow-restructure`. 불릿→산문 통합(C-2)까지 허용. 기본 정책은 "장식만 제거, 구조 보존"이다. 미발행 초고에만 쓴다
 - `제목도 다듬어줘` / `헤딩도 정리해줘` — **헤딩/제목 편집 옵션 켜기**(기본은 꺼짐 = 헤딩 텍스트 불변). 켜지면 Phase 6~7에서 슬러그 재계산·같은 파일 내부 앵커 자동 갱신(`heading_anchor.py`)·게이트 D가 함께 실행된다. 핵심 키워드·번호는 보존하고 콜론 부제 압축(C-10)·상투어만 정리한다
 - `축약하지 마` / `원문 정보 그대로` — **축약(간결화) 기능 끄기**(기본은 켜짐). 예시·반복 부연 설명을 포함해 원문 정보량을 그대로 유지한다. 켜져 있을 때의 판단 기준은 `docs-profile.md` §8 참고
+- `슬롭 검사 빼줘` / `초안 관문 꺼줘` — **초안 관문(게이트 S) 끄기**(기본은 켜짐). Phase 4의 스캔·지침 주입, Phase 6·7의 추출·대조를 모두 건너뛰고 Phase 8·9는 항목을 생략한다. `options.env`에 `SLOP=0`으로 기록된다. 이 옵션은 LLM 콜 수와 무관하다 — 판정은 monolith 콜에 편승하고, 정밀 모드에서만 `wwe-slop-judge`가 1콜 붙는다
 
 ## 주의 사항
 
@@ -634,7 +751,11 @@ Phase 0의 재개 감지(중단된 실행을 이어가는 것)와는 다르다 �
 - `scripts/heading_anchor.py` — **헤딩 슬러그 재계산 + 같은 파일 내부 앵커 치환 + 게이트 D**. 헤딩 편집 옵션이 켜졌을 때만 쓰인다. `rewrite`(슬러그 재계산·앵커 치환)와 `gate`(무결성 판정 + 필요 시 헤딩 단위 롤백) 두 하위 명령
 - `scripts/scan_docs.py` — 문서 분류. 한글 비율·산문량·route_hint·에이전트 지시 파일 판정
 - `references/docs-profile.md` — quick-rules 위에 얹는 문서 전용 오버라이드. 구조 파괴 룰 무효화 + L 계열 제거 지시 + 지문 재생산 금지. `--diagnosis`로 monolith 입력 앞머리에 주입된다
+- `scripts/slop_scan.py` — **초안 관문(게이트 S) 스캐너**. `scan`(원본 채점)·`extract-llm`(monolith 편승 판정 추출)·`compare`(유래 판정·판정 병합) 세 하위 명령. report 전용이라 exit는 항상 0이다
+- `references/slop-lexicon.txt` — S1 확신 표지·S2 필러·S3 주장/근거 표지 사전. 네 절로 나뉘고 `re:` 로 시작하는 줄은 정규식이다
+- `references/slop-gate.md` — 초안 관문 LLM 층 지침. Phase 4가 `02_diagnosis.md` 뒤에 붙여 monolith 콜에 편승시킨다
 - `tests/` — 적대적 코퍼스 16종(전 파일이 `test_md_shield.py`의 IDENTITY 구조 회귀 대상에 `*.md` glob으로 자동 편입된다. 그중 `15_condensable_example`/`16_example_sole_evidence` 2종은 추가로 축약 판단용 픽스처인데, 축약 자체는 LLM 판단이라 그 판단 품질만은 수동 검토 대상이다) + `run.sh`. 스크립트를 고쳤으면 반드시 돌린다
+- `agents/wwe-slop-judge.md` — 초안 관문 비저자 판정 에이전트(`model: sonnet`, 도구 호출 4회 캡). `install.sh`가 `~/.claude/agents/`에 심링크한다. 정밀 모드(`STRICT=1`)에서만 1콜 붙는다
 - 상위 파이프라인: `humanize-korean` 플러그인 (`prepare_monolith_input.py`, `verify_gates.py`, `humanize-monolith`·`humanize-diagnostician`·`humanize-finalizer` 에이전트)
 
 ## 작성자 반복 구절 (report 전용)
