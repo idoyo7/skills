@@ -29,6 +29,21 @@ SUPERCRONIC_SHA1="${SUPERCRONIC_SHA1:-e63c11a9726b775a6a11801e81af4f3fb926aa68}"
 mkdir -p "$BIN_DIR" "$CONF_DIR" "$STATE_DIR" "$LOG_DIR"
 
 log() { printf '%s  %s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" "$*" >>"$LOG"; }
+
+# pod 기동 훅 환경엔 TZ 가 없고 컨테이너는 UTC 라, 시각표를 로컬 시간으로 고정하려면 TZ 를 명시해야 한다.
+resolve_tz() {
+  if [ -n "${WARMUP_TZ:-}" ]; then echo "$WARMUP_TZ"
+  elif [ -n "${TZ:-}" ]; then echo "$TZ"
+  elif [ -s "$CONF_DIR/tz" ]; then cat "$CONF_DIR/tz"
+  else echo Asia/Seoul; fi
+}
+# codex 는 `#!/usr/bin/env node` 스크립트라 훅 환경(PATH 에 nvm 없음)에서는 node 경로를 crontab PATH 에 박아줘야 한다.
+resolve_path() {
+  local node_dir="" v
+  if command -v node >/dev/null 2>&1; then node_dir="$(dirname "$(readlink -f "$(command -v node)")")"
+  else for v in "$HOME"/.nvm/versions/node/*/bin; do [ -x "$v/node" ] && node_dir="$v"; done; fi
+  printf '%s' "${node_dir:+$node_dir:}$BIN_DIR:/usr/local/bin:/usr/bin:/bin"
+}
 alive() { [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; }
 
 ensure_binary() {
@@ -54,9 +69,14 @@ ensure_binary() {
 render() {
   [ $# -gt 0 ] || set -- claude codex
   local p t hh mm
+  local tz; tz="$(resolve_tz)"; printf '%s\n' "$tz" >"$CONF_DIR/tz"
   {
     echo "# ai-session-warmup — 평일 $TIMES 에 5시간 사용 구간을 앉힌다. 생성: ai-session-warmup-cron.sh render $*"
     echo "# 시각을 바꾸려면 WARMUP_TIMES=\"08:00 13:01 18:02\" ai-session-warmup-cron.sh render $* 뒤 restart"
+    echo "CRON_TZ=$tz"
+    echo "TZ=$tz"
+    echo "PATH=$(resolve_path)"
+    echo "HOME=$HOME"
     for p in "$@"; do
       for t in $TIMES; do
         hh="${t%%:*}"; mm="${t#*:}"
@@ -83,7 +103,7 @@ catch_up() {
   for p in $(providers_from_crontab); do
     marker="$STATE_DIR/done-$p-$(date -d "@$best" +%Y%m%d-%H%M)"
     [ -e "$marker" ] && continue
-    "$RUNNER" "$p" >/dev/null 2>&1; rc=$?
+    PATH="$(resolve_path)" "$RUNNER" "$p" >/dev/null 2>&1; rc=$?
     : >"$marker"
     log "catch-up provider=$p slot=$(date -d "@$best" +%F' '%H:%M) rc=$rc"
   done
@@ -110,7 +130,7 @@ case "$ACTION" in
     ensure_binary || exit 1
     if alive; then echo "already running pid=$(cat "$PIDFILE")"; exit 0; fi
     "$SUPERCRONIC" -test "$CRONTAB" >/dev/null 2>&1 || { echo "error: crontab failed supercronic -test: $CRONTAB" >&2; exit 1; }
-    setsid nohup "$SUPERCRONIC" -quiet "$CRONTAB" >>"$LOG" 2>&1 < /dev/null &
+    TZ="$(resolve_tz)" setsid nohup "$SUPERCRONIC" -quiet "$CRONTAB" >>"$LOG" 2>&1 < /dev/null &
     echo $! >"$PIDFILE"
     sleep 1
     alive || { echo "error: supercronic did not start; see $LOG" >&2; rm -f "$PIDFILE"; exit 1; }
@@ -124,7 +144,7 @@ case "$ACTION" in
     ;;
   restart) "$0" stop >/dev/null; exec "$0" start ;;
   status)
-    if alive; then echo "running pid=$(cat "$PIDFILE") supercronic=$("$SUPERCRONIC" -version 2>/dev/null || echo '?')"; else echo "not running"; fi
+    if alive; then echo "running pid=$(cat "$PIDFILE") supercronic=$("$SUPERCRONIC" -version 2>/dev/null || echo '?') tz=$(resolve_tz)"; else echo "not running"; fi
     [ -f "$CRONTAB" ] && { echo "--- $CRONTAB"; grep -v '^#' "$CRONTAB"; }
     [ -f "$HOOK" ] && grep -q 'ai-session-warmup' "$HOOK" && echo "hook: $HOOK (pod 기동 시 자동 start)" || echo "hook: none — run '$0 install-hook'"
     [ -f "$LOG" ] && { echo "--- $LOG"; tail -n 5 "$LOG"; }

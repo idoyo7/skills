@@ -69,14 +69,17 @@ mkdir -p "$cron_home/.local/bin"
 printf '%s\n' '#!/usr/bin/env bash' 'case "$1" in -version) echo mock;; -test) exit 0;; *) exec sleep 300;; esac' >"$cron_home/.local/bin/supercronic"
 chmod +x "$cron_home/.local/bin/supercronic"
 cron_out="$(HOME="$cron_home" PATH="$TMP/bin:$ORIGINAL_PATH" MOCK_UNAME=Linux MOCK_ARGS="$TMP/cron.args" \
-  WARMUP_PROVIDERS=claude WARMUP_CATCHUP_MIN=0 bash "$ROOT/scripts/install.sh")"
+  WARMUP_PROVIDERS=claude WARMUP_CATCHUP_MIN=0 WARMUP_TZ=Asia/Seoul bash "$ROOT/scripts/install.sh")"
 grep -q 'no systemd' <<<"$cron_out"
 cron_bin="$cron_home/.local/bin/ai-session-warmup-cron.sh"
 test -x "$cron_bin"
 test ! -e "$cron_home/.config/systemd/user/ai-session-warmup-claude.timer"
 crontab_file="$cron_home/.config/ai-session-warmup/crontab"
 grep -q "^1 13 \* \* 1-5 $cron_home/.local/bin/ai-session-warmup.sh claude$" "$crontab_file"
-[ "$(grep -vc '^#' "$crontab_file")" -eq 3 ]
+[ "$(grep -v '^#' "$crontab_file" | grep -vc '^[A-Z_]*=')" -eq 3 ]
+grep -q '^CRON_TZ=Asia/Seoul$' "$crontab_file"
+grep -q '^TZ=Asia/Seoul$' "$crontab_file"
+grep -q "^PATH=.*$cron_home/.local/bin:/usr/local/bin:/usr/bin:/bin$" "$crontab_file"
 ! grep -q ' codex$' "$crontab_file"
 grep -q 'ai-session-warmup-cron.sh" start' "$cron_home/.workspace-init.sh"
 HOME="$cron_home" "$cron_bin" install-hook >/dev/null
