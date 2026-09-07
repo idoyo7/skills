@@ -31,6 +31,10 @@ grep -q -- '--safe-mode' "$TMP/claude.args"
 grep -q -- '--ephemeral' "$TMP/codex.args"
 grep -q -- '--ignore-user-config' "$TMP/codex.args"
 grep -q -- '--sandbox read-only' "$TMP/codex.args"
+case "$(cat "$TMP/codex.args")" in
+  *"--ask-for-approval never --sandbox read-only --model "*" exec --ephemeral"*) ;;
+  *) echo "FAIL: Codex global options must precede exec" >&2; exit 1 ;;
+esac
 
 # Installer tests shadow state-changing OS commands, so no live launchd/systemd jobs are touched.
 printf '%s\n' '#!/usr/bin/env bash' 'printf '\''%s\n'\'' "$MOCK_UNAME"' >"$TMP/bin/uname"

@@ -75,14 +75,15 @@ run_once() {
         --output-format json
       ;;
     codex)
-      "$BIN" exec \
+      "$BIN" \
+        --ask-for-approval never \
+        --sandbox read-only \
+        --model "${CODEX_WARMUP_MODEL:-gpt-5.6-luna}" \
+        exec \
         --ephemeral \
         --ignore-user-config \
         --ignore-rules \
         --skip-git-repo-check \
-        --sandbox read-only \
-        --ask-for-approval never \
-        --model "${CODEX_WARMUP_MODEL:-gpt-5.6-luna}" \
         "Reply with the single word: ok"
       ;;
   esac
