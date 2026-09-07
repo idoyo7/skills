@@ -1,6 +1,6 @@
 # skills
 
-Claude Code 개인 스킬 모음. 스킬 하나가 디렉토리 하나고, 각 디렉토리의 `SKILL.md`가 본문이다.
+Claude Code 개인 스킬과 부속 유틸리티 모음. 스킬은 디렉토리 하나가 단위고, 각 디렉토리의 `SKILL.md`가 본문이다.
 
 ## 설치
 
@@ -29,6 +29,12 @@ git clone git@github.com:idoyo7/skills.git ~/src/skills
 | `hooks/workflow-arm/` | PreToolUse (`Workflow`) | 재개 예약 없이 큰 Workflow를 돌리려는 호출을 세션당 한 번 막고, freeze 예약 절차를 안내 |
 
 훅 설치만 건너뛰려면 `install.sh --no-hooks`로 실행한다.
+
+## 유틸리티
+
+| 디렉토리 | 설명 |
+|---|---|
+| [`warmup/`](warmup/) | Claude Code와 Codex의 5시간 사용 구간을 평일 고정 시각에 맞추는 macOS launchd / Ubuntu systemd 자동화와 설치 가이드 |
 
 ## 스킬 추가하기
 
