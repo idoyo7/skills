@@ -80,6 +80,8 @@ systemd timer는 `Persistent=true`라서 전원이 꺼졌거나 suspend 상태�
 
 systemd 가 없거나 `systemctl --user` 가 안 뜨는 호스트(코드서버 pod 등)에서는 설치기가 타이머 대신 사용자 권한 cron 인 [supercronic](https://github.com/aptible/supercronic)(v0.2.49, sha1 검증 후 `~/.local/bin` 에 설치)을 쓴다. crontab 은 `~/.config/ai-session-warmup/crontab` 에 쓰고, `~/.workspace-init.sh` 에 `start` 블록을 넣어 pod 가 재시작될 때마다 다시 띄운다 — 바이너리·crontab·훅이 모두 홈(PVC)에 있어 이미지가 초기화돼도 살아남는다. 기동 시점에 최근 60분(`WARMUP_CATCHUP_MIN`) 안에 놓친 슬롯이 있으면 한 번 보충한다. `WARMUP_PROVIDERS="claude"` 처럼 주면 한쪽만 건다.
 
+pod 기동 훅 환경엔 `TZ` 도 nvm 도 없다(컨테이너는 UTC). 그래서 crontab 머리에 `CRON_TZ`/`TZ`(`WARMUP_TZ` → 설치 셸의 `TZ` → Asia/Seoul)와 node 경로가 들어간 `PATH` 를 써 두고, supercronic 자체도 같은 TZ 아래 띄운다. 이게 없으면 시각표가 9시간 어긋나고 codex(`#!/usr/bin/env node`)는 `node` 를 못 찾는다.
+
 ```bash
 ~/.local/bin/ai-session-warmup-cron.sh status
 ~/.local/bin/ai-session-warmup-cron.sh restart          # crontab 을 고친 뒤
