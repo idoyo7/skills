@@ -1,0 +1,14 @@
+[Unit]
+Description=Run Claude Code session warmup on weekdays
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 08:00:00
+OnCalendar=Mon..Fri *-*-* 13:01:00
+OnCalendar=Mon..Fri *-*-* 18:02:00
+Persistent=true
+AccuracySec=1s
+Unit=ai-session-warmup-claude.service
+
+[Install]
+WantedBy=timers.target
+
