@@ -78,6 +78,14 @@ pmset -g sched
 
 systemd timer는 `Persistent=true`라서 전원이 꺼졌거나 suspend 상태여서 놓친 실행을 다음 기동 시 한 번 보충한다. 정확한 예약 시각에 suspend를 깨우지는 않는다.
 
+systemd 가 없거나 `systemctl --user` 가 안 뜨는 호스트(코드서버 pod 등)에서는 설치기가 타이머 대신 사용자 권한 cron 인 [supercronic](https://github.com/aptible/supercronic)(v0.2.49, sha1 검증 후 `~/.local/bin` 에 설치)을 쓴다. crontab 은 `~/.config/ai-session-warmup/crontab` 에 쓰고, `~/.workspace-init.sh` 에 `start` 블록을 넣어 pod 가 재시작될 때마다 다시 띄운다 — 바이너리·crontab·훅이 모두 홈(PVC)에 있어 이미지가 초기화돼도 살아남는다. 기동 시점에 최근 60분(`WARMUP_CATCHUP_MIN`) 안에 놓친 슬롯이 있으면 한 번 보충한다. `WARMUP_PROVIDERS="claude"` 처럼 주면 한쪽만 건다.
+
+```bash
+~/.local/bin/ai-session-warmup-cron.sh status
+~/.local/bin/ai-session-warmup-cron.sh restart          # crontab 을 고친 뒤
+tail -n 5 ~/.local/log/ai-session-warmup-cron.log
+```
+
 서버에서 로그아웃한 뒤에도 사용자 타이머가 돌아야 한다면 한 번 설정한다.
 
 ```bash
@@ -93,6 +101,25 @@ systemctl --user list-timers 'ai-session-warmup-*.timer'
 journalctl --user -u ai-session-warmup-claude.service -n 30
 journalctl --user -u ai-session-warmup-codex.service -n 30
 ```
+
+## Kubernetes 워크스페이스 pod
+
+코드서버처럼 pod 로 뜬 리눅스 환경은 cron 을 apt 로 깔아도 pod 가 재시작되면 이미지 상태로 돌아가 사라진다. 대신 같은 PVC(홈)를 마운트하는 CronJob 을 클러스터에 걸면 pod 재시작과 무관하게 돈다. pod 안에서 kubectl 이 CronJob 을 만들 권한이 있을 때 쓴다.
+
+```bash
+cd ~/src/skills/warmup
+WARMUP_PROVIDERS=claude bash scripts/install-k8s.sh          # 현재 pod 에서 image·PVC·namespace 를 읽어 apply
+bash scripts/install-k8s.sh --status
+bash scripts/install-k8s.sh --run                              # 지금 Job 하나 띄워 확인 (사용량을 조금 쓴다)
+bash scripts/install-k8s.sh --render                           # apply 없이 manifest 만 본다
+bash scripts/install-k8s.sh --uninstall
+```
+
+- provider × 시각마다 CronJob 하나(`ai-session-warmup-claude-0800` 식), `timeZone` 은 `WARMUP_TZ`(기본 `TZ` → `/etc/timezone` → Asia/Seoul).
+- Job pod 는 워크스페이스 pod 와 같은 노드에 붙는다(podAffinity). RWO PVC 를 나눠 쓰기 위해서라, 워크스페이스 pod 가 내려가 있으면 그 시각의 Job 은 뜨지 않는다.
+- istio 사이드카 주입은 끈다(`sidecar.istio.io/inject: "false"`). 안 끄면 Job 이 끝나지 않는다.
+- 실행기·로그는 PVC 의 `~/.local/bin`, `~/.local/log` 를 그대로 쓴다. Job 로그는 `kubectl logs job/<이름>` 으로도 본다.
+- 이미지 태그는 설치 시점의 워크스페이스 이미지로 고정된다. 워크스페이스 이미지를 올렸으면 다시 설치한다.
 
 ## 모델과 시간 변경
 

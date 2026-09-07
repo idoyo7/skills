@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WARMUP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 INSTALL_BIN="$HOME/.local/bin/ai-session-warmup.sh"
+CRON_BIN="$HOME/.local/bin/ai-session-warmup-cron.sh"
 OS="$(uname -s)"
 ACTION="${1:-install}"
 
@@ -43,10 +44,20 @@ mac_install() {
 }
 
 linux_install() {
-  command -v systemctl >/dev/null 2>&1 || {
-    echo "error: systemctl is required on Linux" >&2
-    exit 1
-  }
+  if ! { command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; }; then
+    # systemd 가 없거나 사용자 세션이 안 뜨는 컨테이너(코드서버 pod 등): 사용자 권한 cron(supercronic)으로 간다.
+    # 바이너리·crontab·훅이 전부 홈에 있어 pod 재시작 뒤에도 ~/.workspace-init.sh 가 다시 띄운다.
+    cp "$SCRIPT_DIR/ai-session-warmup-cron.sh" "$CRON_BIN"
+    chmod 755 "$CRON_BIN"
+    "$CRON_BIN" ensure-binary
+    # shellcheck disable=SC2086 — 공백으로 나뉜 provider 목록을 인자로 펼친다
+    "$CRON_BIN" render ${WARMUP_PROVIDERS:-claude codex} >/dev/null
+    "$CRON_BIN" install-hook
+    "$CRON_BIN" stop >/dev/null 2>&1 || true
+    "$CRON_BIN" start
+    echo "installed (no systemd): supercronic user cron at weekdays 08:00, 13:01, 18:02 — restarts with the pod via ~/.workspace-init.sh"
+    return
+  fi
   local units="$HOME/.config/systemd/user"
   mkdir -p "$units"
   cp "$WARMUP_DIR/templates/linux/ai-session-warmup-claude.service" "$units/"
@@ -66,8 +77,12 @@ status() {
       launchctl print "gui/$(id -u)/io.github.idoyo7.ai-session-warmup.keepawake"
       ;;
     Linux)
-      systemctl --user status ai-session-warmup-claude.timer ai-session-warmup-codex.timer --no-pager
-      systemctl --user list-timers 'ai-session-warmup-*.timer' --no-pager
+      if [ ! -x "$CRON_BIN" ] && command -v systemctl >/dev/null 2>&1; then
+        systemctl --user status ai-session-warmup-claude.timer ai-session-warmup-codex.timer --no-pager
+        systemctl --user list-timers 'ai-session-warmup-*.timer' --no-pager
+      else
+        "$CRON_BIN" status
+      fi
       ;;
     *) echo "error: unsupported OS: $OS" >&2; exit 1 ;;
   esac
@@ -85,6 +100,8 @@ uninstall() {
       done
       ;;
     Linux)
+      [ -x "$CRON_BIN" ] && { "$CRON_BIN" stop 2>/dev/null || true; rm -f "$CRON_BIN" "$HOME/.config/ai-session-warmup/crontab"; }
+      command -v systemctl >/dev/null 2>&1 || { rm -f "$INSTALL_BIN"; echo "uninstalled: user cron and runner removed; supercronic binary, ~/.workspace-init.sh block and logs retained"; return; }
       systemctl --user disable --now ai-session-warmup-claude.timer ai-session-warmup-codex.timer 2>/dev/null || true
       rm -f "$HOME/.config/systemd/user/ai-session-warmup-claude.service" \
         "$HOME/.config/systemd/user/ai-session-warmup-claude.timer" \

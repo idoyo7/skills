@@ -1,0 +1,68 @@
+# 워크스페이스 pod 와 같은 PVC(홈)를 마운트해 ai-session-warmup.sh 를 부르는 CronJob 한 개.
+# scripts/install-k8s.sh 가 provider × 시각 조합마다 __PLACEHOLDER__ 를 채워 렌더한다.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: __NAME__
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/name: ai-session-warmup
+    app.kubernetes.io/instance: __INSTANCE__
+    ai-session-warmup/provider: __PROVIDER__
+spec:
+  schedule: "__SCHEDULE__"
+  timeZone: "__TIMEZONE__"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 900
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 600
+      ttlSecondsAfterFinished: 172800
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: ai-session-warmup
+            app.kubernetes.io/instance: __INSTANCE__
+            ai-session-warmup/provider: __PROVIDER__
+          annotations:
+            sidecar.istio.io/inject: "false"
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsUser: __UID__
+            runAsGroup: __GID__
+            fsGroup: __GID__
+            # 없으면 kubelet 이 PVC 의 모든 파일을 재귀 chown 하느라 몇 분씩 ContainerCreating 에 머문다
+            fsGroupChangePolicy: OnRootMismatch
+          # RWO PVC 를 안전하게 나눠 쓰려고 워크스페이스 pod 와 같은 노드에 붙는다.
+          affinity:
+            podAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - topologyKey: kubernetes.io/hostname
+                  labelSelector:
+                    matchLabels:
+                      __AFFINITY_KEY__: __AFFINITY_VALUE__
+          volumes:
+            - name: home
+              persistentVolumeClaim:
+                claimName: __PVC__
+          containers:
+            - name: warmup
+              image: __IMAGE__
+              imagePullPolicy: IfNotPresent
+              command: ["/bin/bash", "-lc"]
+              args: ["exec \"$HOME/.local/bin/ai-session-warmup.sh\" __PROVIDER__"]
+              env:
+                - name: HOME
+                  value: __HOME__
+                - name: USER
+                  value: __USER__
+              volumeMounts:
+                - name: home
+                  mountPath: __HOME__
+              resources:
+                requests: { cpu: 50m, memory: 128Mi }
+                limits: { cpu: "1", memory: 1Gi }
