@@ -4,7 +4,7 @@
 
 ## 준비물
 
-Claude Code가 설치되어 있어야 한다. Skill을 지원하는 버전이면 특정 버전에 매이지 않는다. 그 외에는 이 저장소를 받을 git만 있으면 된다.
+Claude Code가 설치되어 있어야 한다. Skill을 지원하는 버전이면 특정 버전에 매이지 않는다. 저장소를 받을 git과 검사 스크립트를 실행할 Python 3도 필요하다. Astra 최종 퇴고를 선택할 기기에는 Codex CLI 설치·인증과 `gpt-6-astra` 접근이 추가로 필요하다. `codex --version`, `codex login status`, `codex exec --help`로 확인한다.
 
 ## 1. 스킬 설치
 
@@ -34,7 +34,7 @@ Claude Code 안에서 다음을 실행한다.
 첫째, 스킬 자체 스크립트 검증이다. 저장소 루트에서:
 
 ```bash
-bash tests/run.sh
+bash wwe/tests/run.sh
 ```
 
 md_shield·llm_signature·heading_anchor·author_repeat·slop_scan 다섯 하네스가 순서대로 돌며 전부 통과해야 한다(`OK`가 다섯 번). 이 테스트는 humanize-korean 플러그인 없이도 통과한다 — LLM 호출 없이 마스킹·복원·지문 채점·앵커 재계산·반복 구절 검출 로직만 검증하기 때문이다.
@@ -48,10 +48,15 @@ v1.3에서 추가된 파일은 저장소 클론 시 함께 받아진다: `script
 ## 4. 업데이트
 
 ```bash
-git -C ~/.claude/skills/humanize-docs pull
+git -C ~/src/skills switch main
+git -C ~/src/skills pull --ff-only origin main
+bash ~/src/skills/install.sh
+bash ~/src/skills/wwe/tests/run.sh
 ```
 
-프로젝트 레벨로 설치했다면 경로만 해당 프로젝트의 `.claude/skills/humanize-docs`로 바꾼다.
+`~/src/skills`는 실제 클론 경로로 바꾼다. 최신 배포 브랜치는 `main`이며, wwe 버전은 `wwe/SKILL.md`의 `version`에서 확인한다. 현재 배포 버전은 1.6.0이다. 심링크 설치는 저장소 업데이트가 그대로 반영되며, `install.sh`는 누락된 링크를 보완한다. 로컬 수정 때문에 전환이나 fast-forward가 실패하면 변경을 보존하고 원인을 확인한다. `reset --hard`로 덮어쓰지 않는다.
+
+다른 기기도 각자의 클론에서 같은 절차로 업데이트한다. 스킬 내용은 git으로 갱신되지만 Codex 로그인·모델 접근·권한은 기기별 설정이다. 업데이트 과정에서 full access나 승인 정책을 자동 변경하지 않는다. 이미 열린 Claude 대화가 이전 스킬을 읽었다면 새 대화에서 `/wwe`를 호출해 새 버전을 사용한다.
 
 ## 자주 걸리는 것
 
