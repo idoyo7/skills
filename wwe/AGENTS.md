@@ -4,7 +4,7 @@
 
 ## 이 저장소가 무엇인가
 
-wwe는 실행 파일이 아니라 Claude Code가 읽는 스킬이다. v1.5부터 일반 윤문은 보존 파이프라인, 전개까지 다시 쓰는 요청은 구조 편집 경로로 처리한다. `SKILL.md`에 파이프라인 지시문이, `scripts/`에 그 지시문이 호출하는 결정적 스크립트(마스킹·복원·지문 채점·앵커 재계산·작성자 반복 구절 검출)가 들어 있다. 클론해서 올바른 경로에 두는 것만으로 설치가 끝나고, 별도 빌드나 실행 데몬은 없다.
+wwe는 실행 파일이 아니라 Claude Code가 읽는 스킬이다. v1.6은 보존 윤문·구조 편집과 선택 가능한 Astra 최종 퇴고 handoff를 제공한다. handoff에서는 Claude가 초안·검사 결과를 준비하고 Astra high가 최종 문체를 결정하며 Claude가 내용 보존을 검증한다. `SKILL.md`에 파이프라인 지시문이, `scripts/`에 그 지시문이 호출하는 결정적 스크립트(마스킹·복원·지문 채점·앵커 재계산·작성자 반복 구절 검출)가 들어 있다. 클론해서 올바른 경로에 두는 것만으로 스킬 설치가 끝나고, 별도 빌드나 실행 데몬은 없다.
 
 주요 파일:
 
@@ -15,6 +15,7 @@ wwe는 실행 파일이 아니라 Claude Code가 읽는 스킬이다. v1.5부터
 - `scripts/author_repeat.py` — 작성자 반복 구절 검출·gen-block 생성(v1.3)
 - `references/docs-profile.md` — 보존 모드 전용 윤문 오버라이드
 - `references/structure-editing.md` — 구조 재작성·내용 보존·사이트 링크 검증 가이드(v1.5)
+- `references/engine-swap-astra.md` — Astra high handoff의 준비·호출·검증·재개 가이드(v1.6)
 - `references/author-tics.txt` — 장르별 반복 구절 시드 목록(v1.3)
 - `references/author-repeat-stop.txt` — 검출 시 걸러낼 불용어 목록(v1.3)
 - `tests/test_author_repeat.py` — 작성자 반복 구절 테스트 하네스(v1.3)
@@ -35,14 +36,16 @@ git clone https://github.com/idoyo7/skills.git ~/src/skills
 cd ~/src/skills && bash install.sh
 
 # 이미 존재하면 갱신
-git -C <저장소> pull && bash <저장소>/install.sh
+git -C <저장소> switch main
+git -C <저장소> pull --ff-only origin main
+bash <저장소>/install.sh
 ```
 
 `install.sh`는 스킬 심링크에 이어 `*/agents/*.md`를 `~/.claude/agents/`에 심링크한다. wwe의 `wwe-slop-judge`가 여기에 걸려야 정밀 모드의 초안 관문 판정이 돈다. 같은 이름의 실파일이 있으면 건너뛰고 알리므로, 그 메시지가 보이면 사용자에게 전달한다.
 
 ## 의존성 확인
 
-보존 윤문 파이프라인은 humanize-korean 플러그인에 의존한다. 보존 모드를 설치·검증할 때 존재 여부를 확인한다. 구조 재작성 경로는 이 플러그인을 요구하지 않는다.
+보존 윤문 파이프라인은 humanize-korean 플러그인에 의존한다. 보존 모드를 설치·검증할 때 존재 여부를 확인한다. 구조 재작성과 Astra handoff는 이 플러그인을 요구하지 않는다. handoff를 사용할 기기에서는 `codex --version`, `codex login status`, `codex exec --help`로 CLI·인증·옵션을 확인한다. 기기별 모델 접근과 권한은 스킬 업데이트로 복사되지 않으며 설치 과정에서 전역 권한을 바꾸지 않는다.
 
 ```bash
 ls ~/.claude/plugins/cache/im-not-ai/humanize-korean/*/ 2>/dev/null
@@ -55,7 +58,7 @@ ls ~/.claude/plugins/cache/im-not-ai/humanize-korean/*/ 2>/dev/null
 저장소 루트에서 테스트 하네스를 돌린다.
 
 ```bash
-bash tests/run.sh
+bash wwe/tests/run.sh
 ```
 
 md_shield·llm_signature·heading_anchor·author_repeat·slop_scan 다섯 하네스가 순서대로 실행되며 전부 통과해야 한다. 이 테스트는 humanize-korean 플러그인이 없어도 통과한다(LLM 호출 없이 스킬 자체 로직만 검증). 결과(통과/실패 개수, 실패가 있다면 어느 하네스인지)를 사용자에게 그대로 보고한다.

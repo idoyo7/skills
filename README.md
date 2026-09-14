@@ -17,7 +17,7 @@ git clone git@github.com:idoyo7/skills.git ~/src/skills
 
 | 디렉토리 | 호출 이름 | 설명 |
 |---|---|---|
-| `wwe/` | `/wwe` | 마크다운 문장 윤문·구조 재작성(v1.5). 보존 윤문은 humanize-korean 사용, 구조 편집은 별도 가이드로 진행 |
+| `wwe/` | `/wwe` | 마크다운 윤문·구조 재작성·Astra high 최종 퇴고 handoff(v1.6). Claude 초안·검사 후 Astra 편집, Claude 보존 검증 |
 | `freeze/` | `/freeze` | 얼음! — 5시간 한도에 걸리면 handoff 를 남기고, 땡(리셋 시각)에 같은 세션을 헤드리스로 자동 재개하는 세션 예약 |
 | `jondae/` | `/jondae` | 어투를 존댓말로 맞추는 마무리 패스 (`안된다 → 안됩니다`). 종결어미만 바꾸고 구조·수치·코드는 바이트 보존, 검증은 스크립트가 강제 |
 
