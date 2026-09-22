@@ -5,6 +5,11 @@ wwe 는 문장과 레이아웃의 AI 티를 걷는다. 이 스크립트는 그 �
 않는 축 — 근거 없는 단정(S1), 지워도 손실 없는 문장(S2), 출처 없는 수치·사례(S3) —
 를 세어서 승인 전에 사람에게 보여준다. 고치지 않는다.
 
+S4(명사형·연결어미 종결)는 참고용 report 전용 지표다 — 산문 문단에서 조사·어미가
+탈락한 채 끝나는 문장(개조식이 아닌데도 "~검사.", "~조정 필요." 처럼 끝나는 문장)을
+정규식으로 근사해 개수만 센다. S1~S3 와 달리 게이트·exit 코드·pending 판정 어디에도
+관여하지 않는다.
+
 CLI:
     scan        --src <md> [--lexicon <txt>] [--json]
     extract-llm --final <final.md> --out <11_slop.json>
@@ -417,6 +422,237 @@ def m_S3(sents: list[dict], lex: dict, evidence_corpus: str, fence_paras: set[in
 
 
 # ---------------------------------------------------------------------------
+# 5b-4. 지표 S4 — 명사형·연결어미 종결 (report 전용, 게이트·exit 코드에 영향 없음)
+#
+# S1~S3 가 쓰는 SENT_SPLIT_RE·sentences()·prose_units() 는 건드리지 않는다. S4 는
+# 산문 문단만 봐야 하고 개조식 목록에서는 명사형 종결이 정상이라 목록 항목을
+# 통째로 빼야 한다 — prose_units() 는 목록 마커만 벗기고 항목 자체는 산문으로
+# 살리므로 그대로 재사용할 수 없다. 그래서 문단 추출·문장 분할을 따로 둔다.
+# 판정 결과도 scan_text() 의 "metrics"/"hits" 에 섞지 않는다 — 섞이면
+# cmd_compare() 의 triggered 목록에 S4 가 끼어 build_pending_line() 이 S4 만으로도
+# 게이트 S 보류 줄을 남길 수 있어 "게이트에 영향 없음" 약속이 깨진다.
+# ---------------------------------------------------------------------------
+
+BLOCKQUOTE_RE = re.compile(r"^ {0,3}>")
+HTML_LINE_RE = re.compile(r"^\s*</?[a-zA-Z][\w-]*(?:\s[^>]*)?/?>\s*$")
+HTML_COMMENT_OPEN_RE = re.compile(r"^\s*<!--")
+
+
+def s4_paragraphs(text: str) -> list[dict]:
+    """S4 전용 문단 추출.
+
+    헤딩·목록·표·코드펜스·인용블록·HTML·frontmatter 줄을 통째로 걷어내고 남은
+    줄만 문단(빈 줄 경계) 단위로 이어붙인다. `prose_units()` 와 달리 목록 항목은
+    마커만 벗겨 살리지 않고 줄 전체를 버린다 — 개조식 항목은 명사형 종결이
+    정상이라 S4 판정 대상이 아니다. 마크다운 soft wrap(줄바꿈만 있고 빈 줄은
+    없는 경우)은 같은 문단으로 보고 공백으로 이어붙인다.
+    """
+    lines = text.splitlines()
+    out: list[dict] = []
+    buf: list[str] = []
+    start_line = 0
+
+    def flush() -> None:
+        nonlocal buf
+        if not buf:
+            return
+        joined = " ".join(t.strip() for t in buf if t.strip())
+        if joined:
+            out.append({"line": start_line, "text": joined})
+        buf = []
+
+    i = 0
+    if lines and lines[0].strip() == "---":
+        for j in range(1, len(lines)):
+            if lines[j].strip() == "---":
+                i = j + 1
+                break
+
+    fence_char: str | None = None
+    fence_n = 0
+    in_html_comment = False
+    while i < len(lines):
+        line = lines[i]
+        lineno = i + 1
+        if fence_char is not None:
+            if is_fence_close(line, fence_char, fence_n):
+                fence_char = None
+            i += 1
+            continue
+        m = FENCE_OPEN_RE.match(line)
+        if m:
+            flush()
+            run = m.group(1)
+            fence_char, fence_n = run[0], len(run)
+            i += 1
+            continue
+        if in_html_comment:
+            if "-->" in line:
+                in_html_comment = False
+            flush()
+            i += 1
+            continue
+        if HTML_COMMENT_OPEN_RE.match(line):
+            flush()
+            if "-->" not in line:
+                in_html_comment = True
+            i += 1
+            continue
+        if (
+            HEADING_RE.match(line)
+            or TABLE_SEP_RE.match(line)
+            or TABLE_ROW_RE.match(line)
+            or LIST_MARKER_RE.match(line)
+            or BLOCKQUOTE_RE.match(line)
+            or HTML_LINE_RE.match(line)
+        ):
+            flush()
+            i += 1
+            continue
+        if not line.strip():
+            flush()
+            i += 1
+            continue
+        if not buf:
+            start_line = lineno
+        buf.append(line)
+        i += 1
+    flush()
+    return out
+
+
+# [.!?] 뒤 공백/문단 끝 기준으로 넓게 자른다 — S2 가 쓰는 SENT_SPLIT_RE(다./요./까?
+# 전용)와는 별도 분할이다. 버전 번호("v1.2.")·소수점 뒤의 마침표는 다음이 공백이
+# 아니라 숫자로 이어져 애초에 이 정규식에 걸리지 않는다. 예외는 버전 번호 자체가
+# 문장 끝에 오는 경우("...v1.2." 뒤에 공백)뿐이라 _S4_VERSION_TAIL_RE 로 따로 막는다.
+_S4_ENDER_RE = re.compile(r"[.!?]+(?=\s|$)")
+_S4_VERSION_TAIL_RE = re.compile(r"\d+(?:\.\d+)+\.$")
+
+
+def _s4_split_sentences(paragraph_text: str) -> list[str]:
+    """S4 전용 문장 분할 — 문단을 [.!?] + 공백 또는 문단 끝 기준으로 자른다."""
+    text = paragraph_text.strip()
+    if not text:
+        return []
+    out: list[str] = []
+    last = 0
+    for m in _S4_ENDER_RE.finditer(text):
+        end = m.end()
+        if "." in m.group() and _S4_VERSION_TAIL_RE.search(text[:end][-16:]):
+            # "v1.2." 처럼 버전 번호 꼬리의 마침표는 문장 경계로 보지 않는다.
+            continue
+        piece = text[last:end].strip()
+        if piece:
+            out.append(piece)
+        last = end
+    tail = text[last:].strip()
+    if tail:
+        out.append(tail)
+    return out
+
+
+# 말미 문장부호·닫는 괄호·따옴표(반각·전각·한글 문장부호 포함) 제거용.
+_S4_TRAILING_STRIP = (
+    ".!?,:;)]}\"'“”‘’"
+    "「」『』〈〉【】）］"
+)
+
+# 합쇼체·해요체 종결 — "다"·"요" 하나만으로도 "습니다"/"입니다"/"세요" 등은 잡힌다.
+# 목록에 남긴 긴 형태는 문서화 목적이다("~습니다"가 당연히 비적중임을 코드로 보여준다).
+_S4_DECL_SUFFIXES = ("습니다", "입니다", "니다", "세요", "다", "요", "까", "죠", "오")
+
+# 명사형 전성어미.
+_S4_NOUN_MORPH_SUFFIXES = ("음", "함", "됨", "임", "기")
+
+# 서술어(코풀라·동사)가 탈락한 채로 문장을 끝맺는 소규모 명사 목록 — 정확히 일치할 때만
+# 잡는다(endswith 이 아니다). "필요"는 마지막 글자가 "요"라 해요체 종결과 글자가
+# 겹치므로, 이 정확 일치를 declarative 검사보다 먼저 봐서 그 충돌을 피한다.
+_S4_NOUN_DROP_WORDS = (
+    "필요", "완료", "예정", "가능", "불가", "권장", "중단", "확인", "적용", "조정",
+)
+
+# 연결어미 종결 — 문장이 종결되지 않고 다음 절로 이어지다 만 형태.
+_S4_CONNECTIVE_SUFFIXES = (
+    "는데", "면서", "지만", "어서", "아서", "므로", "니까", "고", "며", "면",
+)
+
+# 문장 말미의 괄호 주석 — "...안전장치다(Phase 6 참고)." 처럼 본문이 이미 정상
+# 종결된 뒤에 참고 표시가 붙으면, 그 괄호 안 마지막 어절("참고")이 판정 대상이
+# 되어 연결어미로 오분류된다(실측: SKILL.md 3건 전부 이 패턴). 판정 전에 말미의
+# 괄호 그룹을 통째로 떼어낸다 — 중첩은 다루지 않고(괄호 안에 괄호가 없다고
+# 가정) 연속된 그룹만 반복해서 벗긴다.
+_S4_TRAILING_PAREN_RE = re.compile(r"[(（][^()（）]*[)）]\s*[.!?,:;]*\s*$")
+
+
+def _s4_strip_trailing_parens(text: str) -> str:
+    s = text.rstrip()
+    while True:
+        stripped = _S4_TRAILING_PAREN_RE.sub("", s).rstrip()
+        if stripped == s:
+            return s
+        s = stripped
+
+
+def _s4_last_word(sentence: str) -> str:
+    s = _s4_strip_trailing_parens(sentence.strip())
+    s = s.rstrip(_S4_TRAILING_STRIP)
+    tokens = s.split()
+    return tokens[-1] if tokens else ""
+
+
+def _s4_classify(word: str) -> str | None:
+    """마지막 어절 하나를 noun_end/connective_end/None 으로 분류한다.
+
+    순서가 판정을 가른다. (1) 소규모 명사 목록은 정확히 일치할 때만 declarative
+    검사보다 먼저 본다 — "필요"가 "요"로 끝나 해요체와 글자가 겹치는 충돌을
+    우회한다. (2) 그다음 declarative 종결이면 명사/연결 어느 쪽으로도 보지
+    않는다 — "확인했습니다"·"~이다"·"~한다" 는 여기서 걸러진다. (3) 명사형
+    전성어미. (4) 연결어미.
+
+    정규식 근사의 한계: "상한"·"검사"처럼 조사 없이 끝나는 일반 명사는 소규모
+    목록에 없으면 잡지 않는다(오탐 리스크 판단, 아래 스크립트 docstring·회귀
+    테스트 주석 참고). 연결어미 목록의 "고"·"며"·"면"은 "사고"·"화면"처럼
+    같은 글자로 끝나는 일반 명사와 구분하지 못해 과탐 여지가 있다 — 정규식
+    근사이므로 report 전용으로만 쓴다.
+    """
+    if not word:
+        return None
+    if word in _S4_NOUN_DROP_WORDS:
+        return "noun_end"
+    if word.endswith(_S4_DECL_SUFFIXES):
+        return None
+    if word.endswith(_S4_NOUN_MORPH_SUFFIXES):
+        return "noun_end"
+    if word.endswith(_S4_CONNECTIVE_SUFFIXES):
+        return "connective_end"
+    return None
+
+
+S4_VALUE_SCALE = 0.2
+
+
+def m_S4(text: str) -> tuple[dict, list[dict]]:
+    hits: list[dict] = []
+    total = 0
+    for para in s4_paragraphs(text):
+        for sent in _s4_split_sentences(para["text"]):
+            total += 1
+            kind = _s4_classify(_s4_last_word(sent))
+            if kind is None:
+                continue
+            hits.append({"id": "S4", "term": kind, "line": para["line"], "quote": sent[:80]})
+    ratio = (len(hits) / total) if total else 0.0
+    triggered = len(hits) > 0
+    value = min(1.0, ratio / S4_VALUE_SCALE)
+    note = (
+        f"명사형·연결어미 종결 {len(hits)} / 문장 {total} = {ratio:.1%}"
+        " (report 전용, 게이트·exit 코드 미포함)"
+    )
+    raw = {"hits": len(hits), "sentences": total, "ratio": round(ratio, 4)}
+    return metric("S4", "명사형·연결어미 종결", "report", raw, value, triggered, note), hits
+
+
+# ---------------------------------------------------------------------------
 # 5c. 집계
 # ---------------------------------------------------------------------------
 
@@ -428,7 +664,13 @@ def scan_text(text: str, lex: dict) -> dict:
     m1, h1 = m_S1(sents, lex, nonspace)
     m2, h2 = m_S2(sents, lex)
     m3, h3 = m_S3(sents, lex, evidence_corpus, _fence_adjacent_paras(sents, fence_lines))
-    return {"metrics": [m1, m2, m3], "hits": list(h1) + list(h2) + list(h3)}
+    m4, h4 = m_S4(text)
+    return {
+        "metrics": [m1, m2, m3],
+        "hits": list(h1) + list(h2) + list(h3),
+        "s4": m4,
+        "s4_hits": h4,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -726,6 +968,13 @@ def print_scan_table(file_: str, result: dict) -> None:
     print(f"발동된 초안 관문 항목: {', '.join(triggered) if triggered else '없음'}")
     for h in result["hits"][:5]:
         print(f"  - {h['id']} (줄 {h['line']}, {h['term']}): {h['quote']}")
+    s4 = result.get("s4")
+    if s4 is not None:
+        print()
+        mark = "O" if s4["triggered"] else "-"
+        print(f"{s4['id']:<4} {s4['label']:<12} {s4['kind']:<8} {s4['value']:>6.2f} {mark:>6}  {s4['note']}")
+        for h in result.get("s4_hits", [])[:3]:
+            print(f"  - S4 (줄 {h['line']}, {h['term']}): {h['quote']}")
 
 
 def cmd_scan(args: argparse.Namespace) -> int:
@@ -744,6 +993,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
             "metrics": result["metrics"],
             "hits": result["hits"],
             "triggered": [m["id"] for m in result["metrics"] if m["triggered"]],
+            "s4": {"metric": result["s4"], "hits": result["s4_hits"]},
         }
         print(json.dumps(payload, ensure_ascii=False))
     return 0
@@ -817,6 +1067,10 @@ def cmd_compare(args: argparse.Namespace) -> int:
         "S1": counts["S1"], "S2": counts["S2"], "S3": counts["S3"],
         "introduced": len(introduced),
         "llm_findings": len((llm or {}).get("findings", [])),
+        # S4 는 report 전용 참고 지표다 — 위 triggered/build_pending_line 어디에도
+        # 섞이지 않으므로 게이트 S 의 exit·보류 판정에는 영향이 없다.
+        "S4_before": before_scan["s4"]["raw"]["hits"],
+        "S4_after": after_scan["s4"]["raw"]["hits"],
     }
     triggered = [m["id"] for m in after_scan["metrics"] if m["triggered"]]
 
@@ -852,9 +1106,14 @@ def cmd_compare(args: argparse.Namespace) -> int:
                 print(f"slop_scan: pending 기록 실패 ({args.pending}): {e}", file=sys.stderr)
         else:
             print(line)
+    s4_before, s4_after = summary["S4_before"], summary["S4_after"]
+    s4_note = f" | S4(참고) {s4_before} → {s4_after}"
+    if s4_after > s4_before:
+        s4_note += " [S4 역행]"
     print(
         f"초안 관문: 확신 {summary['S1']} · 필러 {summary['S2']} · 미검증 {summary['S3']}"
-        f" | 윤문 유입 {summary['introduced']} | LLM 판정 {summary['llm_findings']}건 → {out_path}"
+        f" | 윤문 유입 {summary['introduced']} | LLM 판정 {summary['llm_findings']}건"
+        f"{s4_note} → {out_path}"
     )
     return 0
 

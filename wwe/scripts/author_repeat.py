@@ -938,7 +938,8 @@ def generate_tics_block(seed_path=None):
         "아래 표현은 이 작성자가 습관처럼 되풀이하는 것이다. "
         "나오면 단어를 바꿔치기하지 말고 그 문장을 새로 쓴다. 문장이 전달하는 사실·수치·판단만 추려 처음부터 다시 짓고, 원문의 서술 구조·비유·부정 프레임을 재사용하지 않는다. 대체 표현을 목록으로 만들지 마라 — 대체어가 곧 다음 습관이 된다. "
         "인용문·코드·고유명사 안은 건드리지 않는다. "
-        "(humanize-korean quick-rules 원문 보존 철칙에 따라 인용·코드는 그대로다.)"
+        "(humanize-korean quick-rules 원문 보존 철칙에 따라 인용·코드는 그대로다.) "
+        "다만 실제 대조·조건·인과 관계를 나타내는 접속사(다만·반면·실은·동시에 등)는 그 관계가 살아 있는 한 이 목록의 교정 대상이 아니다 — 관계 없이 습관적으로 반복되는 경우만 고친다(관계 판단은 korean-clarity.md 를 따른다)."
     )
     parts.append(header)
     for raw_line in target.read_text(encoding="utf-8").splitlines():

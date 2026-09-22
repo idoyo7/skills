@@ -249,7 +249,8 @@ class TestScanContract(unittest.TestCase):
     def test_json_top_level_key_order(self):
         rc, data = scan_json(CORPUS_DIR / "clean.md")
         self.assertEqual(rc, 0)
-        self.assertEqual(list(data.keys()), ["file", "metrics", "hits", "triggered"])
+        # s4 는 report 전용 참고 지표라 뒤에 덧붙는다 — 기존 네 키의 순서·존재는 그대로다.
+        self.assertEqual(list(data.keys()), ["file", "metrics", "hits", "triggered", "s4"])
 
     def test_human_table_without_json_flag(self):
         r = run_slop(["scan", "--src", str(CORPUS_DIR / "s1_certainty.md")])
@@ -855,6 +856,195 @@ class TestS3SentenceScopedEvidence(unittest.TestCase):
             f"인라인 코드는 같은 문장에 없으면 근거가 아니다: {result['hits']}",
         )
         self.assertEqual(result["hits"][0]["quote"], "대부분의 팀이 40% 이상 비용을 절감했다.")
+
+
+class TestS4NounConnectiveEnding(unittest.TestCase):
+    """S4(명사형·연결어미 종결) — report 전용, 게이트에 관여하지 않는 참고 지표.
+
+    m_S4()/s4_paragraphs()/_s4_split_sentences()/_s4_classify() 를 직접 호출해
+    적중·비적중·오분할 방지·보호 구간 제외를 확인한다.
+    """
+
+    def test_noun_morph_suffix_hit(self):
+        """명사형 전성어미(음/함/됨/임/기)로 끝나면 noun_end."""
+        slop_scan = _import_slop_scan()
+        m4, hits = slop_scan.m_S4("이 값은 계산 결과임.\n")
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0]["term"], "noun_end")
+        self.assertTrue(m4["triggered"])
+
+    def test_noun_drop_word_exact_list_hit(self):
+        """서술어 탈락 명사 목록은 정확히 일치할 때만 잡는다.
+
+        "필요"는 마지막 글자가 "요"라 해요체 종결과 글자 단위로 겹친다 —
+        _s4_classify() 가 소규모 명사 목록을 declarative 검사보다 먼저 보는
+        이유를 이 테스트로 고정한다.
+        """
+        slop_scan = _import_slop_scan()
+        m4, hits = slop_scan.m_S4("응답 없으면 요청 재전송 필요.\n")
+        self.assertEqual(len(hits), 1, hits)
+        self.assertEqual(hits[0]["term"], "noun_end")
+
+    def test_connective_suffix_hit(self):
+        """연결어미(지만/는데/…)로 문장이 끝나면 connective_end."""
+        slop_scan = _import_slop_scan()
+        m4, hits = slop_scan.m_S4("응답이 늦었지만.\n")
+        self.assertEqual(len(hits), 1, hits)
+        self.assertEqual(hits[0]["term"], "connective_end")
+
+    def test_trailing_paren_note_not_misclassified_as_connective(self):
+        """문장이 이미 "다"로 정상 종결된 뒤 붙은 괄호 주석은 판정 대상이
+        아니다. 괄호를 떼기 전에는 "참고"가 "고"로 끝나 connective_end 로
+        오분류됐다(SKILL.md 실측 3건이 전부 이 패턴)."""
+        slop_scan = _import_slop_scan()
+        m4, hits = slop_scan.m_S4(
+            "후자는 이전 라운드의 스테일 산출물을 게이트가 잘못 통과시키는 "
+            "사고를 막는 안전장치다(Phase 6 참고).\n"
+        )
+        self.assertEqual(hits, [], hits)
+        self.assertFalse(m4["triggered"])
+
+    def test_trailing_paren_removed_before_checking_noun_drop_word(self):
+        """괄호를 뗀 뒤 본문의 마지막 어절이 소규모 명사 목록과 일치하면
+        그 판정을 그대로 살린다 — 괄호 제거가 noun_end 적중까지 지우면 안 된다."""
+        slop_scan = _import_slop_scan()
+        m4, hits = slop_scan.m_S4("설정을 확인(Phase 6 참고).\n")
+        self.assertEqual(len(hits), 1, hits)
+        self.assertEqual(hits[0]["term"], "noun_end")
+
+    def test_paren_only_sentence_not_hit(self):
+        """문장 전체가 괄호 주석이면 괄호를 뗀 뒤 본문이 없으므로 비적중이다."""
+        slop_scan = _import_slop_scan()
+        m4, hits = slop_scan.m_S4("(Phase 6 참고).\n")
+        self.assertEqual(hits, [], hits)
+
+    def test_hapsyo_and_haera_endings_not_hit(self):
+        """합쇼체(습니다)·해라체(-다) 종결은 비적중이다. "~입니다"는 "임"을
+        포함하지만 noun_end 로 새지 않는다(declarative 검사가 먼저다)."""
+        slop_scan = _import_slop_scan()
+        text = (
+            "설정을 확인했습니다. 재시도 횟수는 3회입니다. "
+            "클라이언트는 응답을 기다린다. 이 값은 재시도 상한이다.\n"
+        )
+        m4, hits = slop_scan.m_S4(text)
+        self.assertEqual(hits, [], hits)
+        self.assertFalse(m4["triggered"])
+
+    def test_excludes_heading_list_code_quote_blocks(self):
+        """헤딩·목록·코드펜스·인용블록 안의 개조식·명사 종결은 세지 않는다."""
+        slop_scan = _import_slop_scan()
+        text = (
+            "# 확인 필요\n"
+            "\n"
+            "- 배포 중단\n"
+            "- 재전송 필요\n"
+            "\n"
+            "> 재전송 필요.\n"
+            "\n"
+            "```text\n"
+            "확인.\n"
+            "```\n"
+            "\n"
+            "본문은 정상 문장이다.\n"
+        )
+        m4, hits = slop_scan.m_S4(text)
+        self.assertEqual(hits, [], hits)
+        self.assertEqual(m4["raw"]["sentences"], 1, "산문 문장은 본문 한 줄뿐이어야 한다")
+
+    def test_version_number_tail_not_missplit(self):
+        """버전 번호(v1.2.) 뒤에 공백이 와도 그 자리를 문장 경계로 보지 않는다."""
+        slop_scan = _import_slop_scan()
+        sents = slop_scan._s4_split_sentences(
+            "지원 버전은 v1.2. 최신 릴리스에서 확인한다."
+        )
+        self.assertEqual(
+            sents, ["지원 버전은 v1.2. 최신 릴리스에서 확인한다."],
+            f"버전 번호 뒤 마침표에서 잘못 분할됨: {sents}",
+        )
+
+    def test_decimal_point_not_missplit(self):
+        """소수점은 뒤가 숫자로 이어지므로 애초에 분할 대상이 아니다."""
+        slop_scan = _import_slop_scan()
+        sents = slop_scan._s4_split_sentences("정확도는 원주율 3.14와 같다.")
+        self.assertEqual(sents, ["정확도는 원주율 3.14와 같다."])
+
+    def test_korean_clarity_cases_fixtures_have_at_least_one_hit(self):
+        """korean_clarity_cases.md 사례 1~3의 "입력" 3건을 픽스처로 쓴다(문서에서
+        그대로 옮김). 사례 1의 "요청 재전송 필요."가 노운 목록 정확 일치로 최소
+        1건은 잡혀야 한다 — 사례 2·3은 이 소규모 목록으로는 0건이 될 수 있다
+        (예: "상한."·"지연."은 목록 밖이라 이 구현에서는 비적중, 아래
+        TestS4DeployToolExample 클래스독스트링 참고)."""
+        slop_scan = _import_slop_scan()
+        case1 = (
+            "# 재시도 설정\n\n"
+            "클라이언트는 서버 응답을 기다린다. 응답 없으면 요청 재전송 필요. "
+            "재시도 횟수는 설정 파일에 박아 넣는다 — 최대 3회.\n\n"
+            "이 설정은 재시도 횟수의 상한.\n\n"
+            "- 기본값: 3회\n"
+            "- 설정 키: retry_count\n"
+        )
+        case2 = (
+            "# 메모리 설정\n\n"
+            "Pod 요청량 512Mi에 overhead 600Mi 더해야 한다. 이 값이 실제 사용량보다 클 수 있다.\n\n"
+            "캐시 적중률은 그대로다. 설정값은 `retry_count`에 박아 넣는다.\n\n"
+            "> 운영자는 \"응답 없음 — 원인 불명\"이라고 기록했다.\n\n"
+            "```python\n"
+            "# 응답 없음 — 원인 불명\n"
+            "retry_count = 3\n"
+            "```\n"
+        )
+        case3 = (
+            "# 관측 기록\n\n"
+            "그러면 경고가 표시된다. 이후 처리 지연.\n\n"
+            "트래픽 병목은 네트워크에서 발생했다. 파이프라인은 세 단계로 구성되어 있다.\n"
+        )
+        total = 0
+        for text in (case1, case2, case3):
+            _, hits = slop_scan.m_S4(text)
+            total += len(hits)
+        self.assertGreaterEqual(total, 1, "세 사례를 합쳐 S4 가 1건도 안 잡혔다")
+
+
+class TestS4DeployToolExample(unittest.TestCase):
+    """배포 도구 예시 원문/복원본 — 원문 기대값 산정 근거를 여기 적는다.
+
+    원문 5문장: "검사."·"중단."·"필요."·"상한."·"필요." 순서로 끝난다.
+    - "중단"·"필요"는 소규모 서술어 탈락 명사 목록(_S4_NOUN_DROP_WORDS)에 정확히
+      일치해 noun_end 로 잡힌다 → 2번째·3번째·5번째 문장.
+    - "검사"·"상한"은 같은 구조(조사 없는 일반 명사 종결)지만 그 목록에 없어
+      이 구현에서는 잡히지 않는다 → 1번째·4번째 문장. 목록을 넓혀 "조사 없는
+      일반 명사 종결"을 전부 잡을 수도 있었지만, 산문에서 흔한 두 글자 한자어
+      명사(예: "결과", "자체", "여부")까지 끝말로 걸릴 위험이 커서(오탐 리스크)
+      과탐보다 미탐을 택했다 — 이 판단은 보고에도 남긴다.
+      => 원문 기대 적중 수: 3건 (전체 5문장 중).
+    복원본은 다섯 문장 모두 "-다/-이다"로 끝나 declarative 검사에서 전부
+    제외된다 → 기대 적중 수 0건.
+    """
+
+    ORIGINAL = (
+        "배포 도구는 변경 설정 파일 검사. 검사 실패 시 배포 중단. "
+        "요청 처리 지연 원인 확인 후 제한값 조정 필요. 이 설정은 재시도 횟수의 상한. "
+        "응답 없으면 요청 재전송 필요."
+    )
+    RESTORED = (
+        "배포 도구는 변경된 설정 파일을 검사한다. 검사에 실패하면 배포를 중단한다. "
+        "요청 처리가 지연되는 원인을 확인한 뒤 제한값을 조정해야 한다. "
+        "이 설정은 재시도 횟수의 상한이다. 응답이 없으면 요청을 다시 보내야 한다."
+    )
+
+    def test_original_has_three_hits(self):
+        slop_scan = _import_slop_scan()
+        m4, hits = slop_scan.m_S4(self.ORIGINAL)
+        self.assertEqual(m4["raw"]["sentences"], 5)
+        self.assertEqual(len(hits), 3, hits)
+        self.assertTrue(all(h["term"] == "noun_end" for h in hits))
+
+    def test_restored_has_zero_hits(self):
+        slop_scan = _import_slop_scan()
+        m4, hits = slop_scan.m_S4(self.RESTORED)
+        self.assertEqual(m4["raw"]["sentences"], 5)
+        self.assertEqual(hits, [], hits)
+        self.assertFalse(m4["triggered"])
 
 
 if __name__ == "__main__":
