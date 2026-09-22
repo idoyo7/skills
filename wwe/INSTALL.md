@@ -54,7 +54,7 @@ bash ~/src/skills/install.sh
 bash ~/src/skills/wwe/tests/run.sh
 ```
 
-`~/src/skills`는 실제 클론 경로로 바꾼다. 최신 배포 브랜치는 `main`이며, wwe 버전은 `wwe/SKILL.md`의 `version`에서 확인한다. 현재 배포 버전은 1.6.0이다. 심링크 설치는 저장소 업데이트가 그대로 반영되며, `install.sh`는 누락된 링크를 보완한다. 로컬 수정 때문에 전환이나 fast-forward가 실패하면 변경을 보존하고 원인을 확인한다. `reset --hard`로 덮어쓰지 않는다.
+`~/src/skills`는 실제 클론 경로로 바꾼다. 최신 배포 브랜치는 `main`이며, wwe 버전은 `wwe/SKILL.md`의 `version`에서 확인한다. 현재 배포 버전은 1.7.0이다. 심링크 설치는 저장소 업데이트가 그대로 반영되며, `install.sh`는 누락된 링크를 보완한다. 로컬 수정 때문에 전환이나 fast-forward가 실패하면 변경을 보존하고 원인을 확인한다. `reset --hard`로 덮어쓰지 않는다.
 
 다른 기기도 각자의 클론에서 같은 절차로 업데이트한다. 스킬 내용은 git으로 갱신되지만 Codex 로그인·모델 접근·권한은 기기별 설정이다. 업데이트 과정에서 full access나 승인 정책을 자동 변경하지 않는다. 이미 열린 Claude 대화가 이전 스킬을 읽었다면 새 대화에서 `/wwe`를 호출해 새 버전을 사용한다.
 
