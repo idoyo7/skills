@@ -26,9 +26,18 @@ git clone git@github.com:idoyo7/skills.git ~/src/skills
 
 | 디렉터리 | 이벤트 | 설명 |
 |---|---|---|
-| `hooks/reply-check/` | Stop | 마지막 assistant 메시지의 한국어 산문을 세 축(무생물 주어·반복 구절·긴 문장)으로 검사, 기준 초과 시 재작성 요청 |
+| `hooks/reply-check/` | Stop | 마지막 assistant 메시지의 한국어 산문을 네 축(무생물 주어·반복 구절·긴 문장·구조 패턴)으로 검사. 기본(advise) 모드는 그 자리에서 막지 않고 세션별 pending 파일에 사유만 남긴다 — Stop 훅은 답변이 이미 표시된 뒤라 그 자리에서 막으면 답을 두 번 보게 되기 때문. `REPLY_CHECK_MODE=block`으로 예전 동작(즉시 재작성 요청)으로 되돌릴 수 있다 |
+| `hooks/reply-hint/` | UserPromptSubmit | `reply-check`가 advise 모드에서 남긴 pending 힌트를 다음 사용자 턴 시작 시 읽어, 모델에게만 보이는 컨텍스트로 끼워 넣는다 |
 
 훅 설치만 건너뛰려면 `install.sh --no-hooks`로 실행한다.
+
+## 출력 스타일
+
+`install.sh`가 `output-styles/*.md`를 `~/.claude/output-styles/`에 심링크한다. 실제 적용은 자동이 아니다 — `/output-style` 명령이나 `settings.json`의 `"outputStyle"` 값으로 직접 고른다.
+
+| 파일 | 설명 |
+|---|---|
+| `output-styles/korean-plain.md` | `reply-check`가 사후에 잡는 패턴(긴 문장, 수사 의문 종결, AI 서명구, 습관어 시드 등)을 답변을 쓰기 전에 반영하는 지침. 재작성 자체를 줄이는 예방 쪽 대응이다 |
 
 ## 유틸리티
 

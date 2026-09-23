@@ -75,6 +75,35 @@ for agent_md in "$REPO_DIR"/*/agents/*.md; do
   fi
 done
 
+# ── 1-b-2. 출력 스타일 심링크 ───────────────────────────────────────────────
+# output-styles/*.md 를 ~/.claude/output-styles/ 에 심링크한다. 스킬·에이전트
+# 링크 규칙과 동일하다 — 같은 이름의 실파일이 있으면 건너뛰고 알린다. 이
+# 단계는 어떤 스타일을 쓸지(outputStyle 설정)는 건드리지 않는다. 적용은
+# /output-style 명령이나 settings.json의 "outputStyle" 값으로 사용자가 직접
+# 고른다.
+OUTPUT_STYLES_DIR="$HOME/.claude/output-styles"
+mkdir -p "$OUTPUT_STYLES_DIR"
+for style_md in "$REPO_DIR"/output-styles/*.md; do
+  [ -f "$style_md" ] || continue
+  name="$(basename "$style_md")"
+  dest="$OUTPUT_STYLES_DIR/$name"
+
+  if [ -L "$dest" ]; then
+    current="$(resolve_path "$dest")"
+    if [ "$current" = "$style_md" ]; then
+      echo "ok:   $name (출력 스타일 이미 연결됨)"
+    else
+      ln -sfn "$style_md" "$dest"
+      echo "fix:  $name → $style_md (다른 곳을 가리키던 링크 교체)"
+    fi
+  elif [ -e "$dest" ]; then
+    echo "skip: $name — $dest 가 실파일로 존재. 치운 뒤 다시 실행"
+  else
+    ln -s "$style_md" "$dest"
+    echo "new:  $name → $style_md"
+  fi
+done
+
 # ── 1-c. deprecated 정리 ────────────────────────────────────────────────────
 # deprecated/ 로 옮긴 스킬·훅은 위아래 설치 루프가 더는 집지 않는다. 예전에
 # 설치해 둔 머신에 남은 심링크와 settings.json 등록은 여기서 걷는다. 심링크만

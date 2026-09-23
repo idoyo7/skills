@@ -7,6 +7,10 @@
 3. stop_hook_active: true → 출력 없음
 4. 코드블록만 있는 답변 → 스킵 (출력 없음)
 5. 깨진 JSON stdin → exit 0, stderr 한 줄
+
+기존 케이스는 대부분 REPLY_CHECK_MODE=block(예전 동작)을 그대로 가정하므로
+_run() 의 mode 기본값을 block 으로 둔다. advise 모드(현재 기본 동작)는
+TestAdviseMode 에서 pending 파일 생성/삭제를 따로 검증한다.
 """
 import importlib.util
 import io
@@ -60,12 +64,23 @@ def _make_transcript(text: str) -> str:
     return path
 
 
-def _run(transcript_path: str, stop_hook_active: bool = False) -> tuple[str, str, int]:
+def _run(
+    transcript_path: str,
+    stop_hook_active: bool = False,
+    mode: str = "block",
+    session_id: str = "test-session",
+    config_dir: str | None = None,
+) -> tuple[str, str, int]:
     """reply-check main을 stdin/stdout/stderr를 캡처해 실행한다.
     Returns (stdout_text, stderr_text, exit_code).
+
+    mode 기본값은 "block" — 기존 테스트 다수가 그 시절(REPLY_CHECK_MODE 도입 전)
+    동작을 그대로 검증하기 때문이다. advise 모드를 검증하려면 mode="advise" 를
+    명시한다. config_dir 는 pending 파일이 실제 ~/.claude 를 건드리지 않게 하는
+    용도로, 지정 시 CLAUDE_CONFIG_DIR 환경변수로 넘어간다.
     """
     payload = json.dumps({
-        "session_id": "test-session",
+        "session_id": session_id,
         "transcript_path": transcript_path,
         "stop_hook_active": stop_hook_active,
         "hook_event_name": "Stop",
@@ -78,6 +93,10 @@ def _run(transcript_path: str, stop_hook_active: bool = False) -> tuple[str, str
     stdout_buf = io.StringIO()
     stderr_buf = io.StringIO()
 
+    env_patch = {"REPLY_CHECK_MODE": mode}
+    if config_dir is not None:
+        env_patch["CLAUDE_CONFIG_DIR"] = config_dir
+
     exit_code = 0
     try:
         with (
@@ -85,6 +104,7 @@ def _run(transcript_path: str, stop_hook_active: bool = False) -> tuple[str, str
             patch("sys.stdout", stdout_buf),
             patch("sys.stderr", stderr_buf),
             patch.object(_mod, "_LOG_PATH", Path(tmp_log)),
+            patch.dict(os.environ, env_patch),
         ):
             try:
                 _mod.main()
@@ -414,6 +434,156 @@ class TestStemSeedAndPastQ(unittest.TestCase):
         sents = _mod._split_sentences("그 선택이 시장 규모를 키웠나?")
         b, r, hits = _mod._check_axis4("그 선택이 시장 규모를 키웠나?", sents)
         self.assertTrue(any("수사 의문" in x for x in b))
+
+
+# ── advise 모드: pending 파일 기록/삭제 ─────────────────────────────────────
+
+_BAD_TEXT = (
+    "이에 따라 우리는 결론을 내려야 한다. "
+    "결론적으로 이 접근 방식이 가장 좋은 방법이라는 점을 확인했으며 앞으로도 지속적으로 적용해야 할 것이다. "
+    "결론적으로 이 방식은 모든 팀에 적합하다고 볼 수 있는 것이며 반드시 도입해야 한다. "
+    "요약하면 이 방법은 효율적이고 실용적이며 지속 가능한 접근법으로 평가된다. "
+    "이에 따라 모든 구성원이 이 방침을 따라야 하며 예외는 없다는 것이다. "
+    "이 접근법의 효과성이라는 것이 팀 생산성을 좌우했다는 점은 명확하다. "
+    "이 접근법의 효과성이라는 것이 팀 생산성을 좌우했다는 점은 명확하다. "
+)
+
+_GOOD_TEXT = (
+    "파일을 저장하려면 Ctrl+S를 누르면 된다. "
+    "설정 메뉴는 오른쪽 위 톱니바퀴 아이콘에 있다. "
+    "검색창에 원하는 키워드를 입력하면 결과가 나온다. "
+    "목록에서 항목을 클릭하면 상세 페이지로 이동한다. "
+    "변경 사항은 자동으로 저장된다. "
+    "문제가 생기면 로그 파일을 확인해라. "
+    "설치는 터미널에서 npm install 명령어로 한다. "
+    "버전 확인은 node --version 으로 한다. "
+    "디렉터리 구조는 src 폴더 아래에 있다. "
+    "테스트를 돌리려면 npm test를 입력해라. "
+)
+
+
+class TestAdviseMode(unittest.TestCase):
+    def _pending_path(self, config_dir: str, session_id: str = "test-session") -> Path:
+        safe = _mod._sanitize_session_id(session_id)
+        return Path(config_dir) / "hooks/state/reply-check" / f"{safe}.json"
+
+    def test_advise_mode_never_prints_decision(self):
+        """advise 모드에서는 검사에 걸려도 stdout에 아무것도 안 찍는다."""
+        with tempfile.TemporaryDirectory() as cfg_dir:
+            path = _make_transcript(_BAD_TEXT)
+            try:
+                stdout, stderr, code = _run(path, mode="advise", config_dir=cfg_dir)
+            finally:
+                os.unlink(path)
+            self.assertEqual(code, 0)
+            self.assertEqual(stdout.strip(), "", "advise 모드는 stdout에 decision을 찍지 않아야 함")
+
+    def test_advise_mode_writes_pending_file(self):
+        """advise 모드에서 검사에 걸리면 세션별 pending 파일에 사유가 남는다."""
+        with tempfile.TemporaryDirectory() as cfg_dir:
+            path = _make_transcript(_BAD_TEXT)
+            try:
+                _run(path, mode="advise", config_dir=cfg_dir)
+            finally:
+                os.unlink(path)
+
+            pending = self._pending_path(cfg_dir)
+            self.assertTrue(pending.exists(), "pending 파일이 생성돼야 함")
+            rec = json.loads(pending.read_text(encoding="utf-8"))
+            self.assertIn("reply-check", rec.get("reason", ""))
+            self.assertIn("ts", rec)
+            self.assertIn("chars", rec)
+
+    def test_advise_mode_clears_pending_on_pass(self):
+        """통과하는 답변이 오면 이전에 남아 있던 pending 파일을 지운다."""
+        with tempfile.TemporaryDirectory() as cfg_dir:
+            bad_path = _make_transcript(_BAD_TEXT)
+            try:
+                _run(bad_path, mode="advise", config_dir=cfg_dir)
+            finally:
+                os.unlink(bad_path)
+            pending = self._pending_path(cfg_dir)
+            self.assertTrue(pending.exists(), "사전 조건: pending 파일이 있어야 함")
+
+            good_path = _make_transcript(_GOOD_TEXT)
+            try:
+                _run(good_path, mode="advise", config_dir=cfg_dir)
+            finally:
+                os.unlink(good_path)
+            self.assertFalse(pending.exists(), "통과 시 pending 파일이 삭제돼야 함")
+
+    def test_advise_mode_skip_case_clears_pending(self):
+        """한글 비율/길이 미달로 스킵되는 경우도 통과로 취급해 pending을 지운다."""
+        with tempfile.TemporaryDirectory() as cfg_dir:
+            bad_path = _make_transcript(_BAD_TEXT)
+            try:
+                _run(bad_path, mode="advise", config_dir=cfg_dir)
+            finally:
+                os.unlink(bad_path)
+            pending = self._pending_path(cfg_dir)
+            self.assertTrue(pending.exists())
+
+            code_only = "```python\nprint('hi')\n```\n"
+            skip_path = _make_transcript(code_only)
+            try:
+                _run(skip_path, mode="advise", config_dir=cfg_dir)
+            finally:
+                os.unlink(skip_path)
+            self.assertFalse(pending.exists())
+
+    def test_advise_mode_empty_session_id_skips_file_write(self):
+        """session_id가 비어 있으면 파일을 쓰지 않고 조용히 넘어간다."""
+        with tempfile.TemporaryDirectory() as cfg_dir:
+            path = _make_transcript(_BAD_TEXT)
+            try:
+                stdout, stderr, code = _run(
+                    path, mode="advise", config_dir=cfg_dir, session_id=""
+                )
+            finally:
+                os.unlink(path)
+            self.assertEqual(code, 0)
+            state_dir = Path(cfg_dir) / "hooks/state/reply-check"
+            if state_dir.exists():
+                self.assertEqual(list(state_dir.iterdir()), [])
+
+    def test_sanitize_session_id_strips_unsafe_chars(self):
+        unsafe = "../../etc/passwd session"
+        safe = _mod._sanitize_session_id(unsafe)
+        self.assertNotIn("/", safe)
+        self.assertNotIn(" ", safe)
+        self.assertNotIn(".", safe)
+
+    def test_log_records_mode_field(self):
+        """block 모드로 돌려도 jsonl 로그에 mode 필드가 남는다."""
+        fd, tmp_log = tempfile.mkstemp(suffix=".jsonl")
+        os.close(fd)
+        with tempfile.TemporaryDirectory() as cfg_dir:
+            path = _make_transcript(_GOOD_TEXT)
+            payload = json.dumps({
+                "session_id": "test-session",
+                "transcript_path": path,
+                "stop_hook_active": False,
+                "hook_event_name": "Stop",
+            })
+            try:
+                with (
+                    patch("sys.stdin", io.StringIO(payload)),
+                    patch("sys.stdout", io.StringIO()),
+                    patch("sys.stderr", io.StringIO()),
+                    patch.object(_mod, "_LOG_PATH", Path(tmp_log)),
+                    patch.dict(os.environ, {"REPLY_CHECK_MODE": "block", "CLAUDE_CONFIG_DIR": cfg_dir}),
+                ):
+                    try:
+                        _mod.main()
+                    except SystemExit:
+                        pass
+                lines = Path(tmp_log).read_text(encoding="utf-8").strip().splitlines()
+                self.assertTrue(lines)
+                rec = json.loads(lines[-1])
+                self.assertEqual(rec.get("mode"), "block")
+            finally:
+                os.unlink(path)
+                os.unlink(tmp_log)
 
 
 if __name__ == "__main__":

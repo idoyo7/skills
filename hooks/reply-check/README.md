@@ -1,6 +1,14 @@
 # reply-check
 
-Claude Code Stop 훅. 마지막 assistant 메시지가 한국어 산문이면 세 가지 축으로 품질을 확인하고, 기준을 넘으면 재작성을 요청한다.
+Claude Code Stop 훅. 마지막 assistant 메시지가 한국어 산문이면 네 가지 축으로 품질을 확인한다.
+
+## advise 모드가 기본이다
+
+Stop 훅은 답변이 이미 화면에 표시된 뒤에 돈다. 그 자리에서 `decision: block`을 내면 Claude가 같은 내용을 다시 써서 사용자가 답을 두 번 보게 된다(2026-09 기준 최근 30일 응답의 약 32%가 이 경로로 중복 출력됐고, 그중 대다수는 `author-tics.txt` 시드 한 개 매치였다). 그래서 기본 동작(`REPLY_CHECK_MODE=advise`)은 그 자리에서 막지 않는다. 검사에 걸리면 사유를 세션별 pending 파일(`$CLAUDE_CONFIG_DIR/hooks/state/reply-check/<session_id>.json`)에 적어두기만 하고, 다음 사용자 턴이 시작될 때 [`reply-hint`](../reply-hint/README.md) 훅(UserPromptSubmit)이 그 파일을 읽어 모델에게만 보이는 컨텍스트로 끼워 넣는다. 사용자는 중복 응답을 보지 않고, Claude는 다음 답변에서 같은 실수를 피할 단서를 받는다.
+
+`REPLY_CHECK_MODE=block`으로 설정하면 예전처럼 그 자리에서 `decision: block`을 낸다.
+
+pending 파일이 남아 있어도 다음 답변이 검사를 통과하면 지운다 — 오래된 힌트가 무관한 턴까지 따라붙지 않게.
 
 ## 세 가지 검사 축
 
@@ -64,7 +72,11 @@ Claude Code Stop 훅. 마지막 assistant 메시지가 한국어 산문이면 �
 
 `~/.claude/hooks/logs/reply-check.jsonl`
 
-각 줄은 `ts`, `session`, `chars`, `inanimate_rate`, `seed_hits`, `avg_len`, `struct_hits`, `struct_report`, `blocked` 필드를 담은 JSON이다. `struct_hits`는 axis4 차단·보고 히트 목록, `struct_report`는 "참고:" 로만 표시되는 보고 문자열 배열이다.
+각 줄은 `ts`, `session`, `mode`, `chars`, `inanimate_rate`, `seed_hits`, `avg_len`, `struct_hits`, `struct_report`, `blocked` 필드를 담은 JSON이다. `mode`는 `advise`/`block` 중 그 호출 때 실제로 쓰인 값이다. `blocked`는 모드와 무관하게 "검사에 걸렸는가"를 뜻하므로(advise 모드에서도 걸리면 `true`) 과거 통계와 그대로 비교할 수 있다. `struct_hits`는 axis4 차단·보고 히트 목록, `struct_report`는 "참고:" 로만 표시되는 보고 문자열 배열이다.
+
+## pending 파일 위치
+
+`$CLAUDE_CONFIG_DIR/hooks/state/reply-check/<session_id>.json` (`CLAUDE_CONFIG_DIR` 미설정이면 `~/.claude`). advise 모드에서 검사에 걸리면 `{"ts": <epoch>, "reason": "...", "chars": N}` 형태로 이 파일에 덮어쓴다 — 최신 답변 하나만 의미가 있어서다. `reply-hint` 훅이 다음 턴에 읽고 지운다. session_id는 파일명으로 쓸 수 없는 문자를 `_`로 바꿔 저장한다.
 
 ## 시드 파일 경로
 
@@ -80,7 +92,7 @@ Claude Code Stop 훅. 마지막 assistant 메시지가 한국어 산문이면 �
 
 ## 끄는 법
 
-`~/.claude/settings.json`의 `hooks.Stop` 배열에서 이 훅 항목을 제거하거나 주석 처리한다(JSON은 주석 미지원이므로 항목 자체를 삭제한다). `--no-hooks` 플래그로 `install.sh`를 실행하면 훅 설치 단계를 건너뛸 수 있다.
+`~/.claude/settings.json`의 `hooks.Stop` 배열에서 이 훅 항목을 제거하거나 주석 처리한다(JSON은 주석 미지원이므로 항목 자체를 삭제한다). `--no-hooks` 플래그로 `install.sh`를 실행하면 훅 설치 단계를 건너뛸 수 있다. 검사 자체는 유지하되 advise 대신 예전 block 동작만 되돌리려면 환경변수 `REPLY_CHECK_MODE=block`을 설정한다(이때는 `reply-hint` 훅이 pending 파일을 찾을 일이 없다).
 
 ## 설치
 
