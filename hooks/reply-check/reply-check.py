@@ -1,8 +1,19 @@
 #!/usr/bin/env python3
 """Stop hook: 마지막 assistant 메시지의 한국어 산문 품질을 점검한다.
 
+이 훅은 Stop 이벤트에서 돈다 — 즉 답변이 이미 화면에 표시된 뒤다. 그 시점에
+decision:block 을 내면 Claude가 같은 내용을 다시 써서 사용자가 답을 두 번 보게
+된다(2026-09 기준 최근 30일 응답의 약 32%가 이 경로로 중복 출력됐다). 그래서
+기본 동작은 REPLY_CHECK_MODE=advise 다 — 검사에 걸려도 그 자리에서 막지 않고,
+사유를 세션별 pending 파일(hooks/reply-hint/README.md 참고)에 적어 두기만 한다.
+그 파일은 다음 사용자 턴이 시작될 때 reply-hint.py(UserPromptSubmit 훅)가 읽어
+모델에게만 보이는 컨텍스트로 끼워 넣는다 — 사용자는 중복 응답을 보지 않는다.
+
+REPLY_CHECK_MODE=block 으로 설정하면 예전처럼 그 자리에서 decision:block 을
+낸다(회귀 테스트·비교 측정용으로 남겨둔 동작).
+
 stdin  (JSON): { session_id, transcript_path, stop_hook_active, hook_event_name }
-stdout (JSON): { "decision": "block", "reason": "..." }  — 막을 때만 출력
+stdout (JSON): { "decision": "block", "reason": "..." }  — block 모드에서 막을 때만 출력
 stderr       : 내부 오류 시 한 줄, exit 0
 exit code    : 항상 0  (훅이 세션을 죽이는 사고는 없어야 한다)
 """
@@ -99,6 +110,24 @@ _AUTHOR_REPEAT_PATH = _find_path(
 
 _LOG_PATH = _claude_config_dir() / "hooks/logs/reply-check.jsonl"
 
+# advise 모드에서 차단 사유를 세션별로 적어두는 자리. reply-hint.py(UserPromptSubmit
+# 훅)가 다음 턴 시작 시 여기를 읽는다. _claude_config_dir() 를 매번 호출하는 이유는
+# CLAUDE_CONFIG_DIR 환경변수를 테스트마다 다르게 줄 수 있어야 하기 때문이다(상수로
+# 한 번만 굳히면 테스트에서 임시 디렉터리로 못 돌린다).
+_PENDING_DIRNAME = "hooks/state/reply-check"
+
+
+def _pending_dir() -> Path:
+    return _claude_config_dir() / _PENDING_DIRNAME
+
+
+_RE_UNSAFE_SESSION_CHARS = re.compile(r"[^A-Za-z0-9_-]")
+
+
+def _sanitize_session_id(session_id: str) -> str:
+    """파일명으로 안전하게 쓸 수 있도록 session_id를 정리한다."""
+    return _RE_UNSAFE_SESSION_CHARS.sub("_", session_id.strip())[:200]
+
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
@@ -118,6 +147,38 @@ def _log(rec: dict) -> None:
 
 def _block(reason: str) -> None:
     print(json.dumps({"decision": "block", "reason": reason}, ensure_ascii=False))
+
+
+def _pending_path(session_id: str) -> Path | None:
+    safe = _sanitize_session_id(session_id)
+    if not safe:
+        return None
+    return _pending_dir() / f"{safe}.json"
+
+
+def _write_pending(session_id: str, reason: str, chars: int) -> None:
+    """advise 모드에서 차단 사유를 세션별 pending 파일에 남긴다. 최신 답변만
+    의미가 있으므로 항상 덮어쓴다."""
+    path = _pending_path(session_id)
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        rec = {"ts": time.time(), "reason": reason, "chars": chars}
+        path.write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001
+        _err(f"pending 파일 기록 실패: {exc}")
+
+
+def _clear_pending(session_id: str) -> None:
+    """답변이 검사를 통과하면 남아 있던 pending 힌트가 다음 턴까지 묵지 않게 지운다."""
+    path = _pending_path(session_id)
+    if path is None:
+        return
+    try:
+        path.unlink(missing_ok=True)
+    except Exception as exc:  # noqa: BLE001
+        _err(f"pending 파일 삭제 실패: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -506,6 +567,10 @@ def _check_axis4(text: str, sents: list[str]) -> tuple[list[str], list[str], lis
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    mode = os.environ.get("REPLY_CHECK_MODE", "advise").strip().lower()
+    if mode not in ("advise", "block"):
+        mode = "advise"
+
     # stdin 파싱
     try:
         raw = sys.stdin.read()
@@ -540,6 +605,7 @@ def main() -> None:
     log_rec: dict = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "session": session_id,
+        "mode": mode,
         "chars": char_count,
         "inanimate_rate": None,
         "seed_hits": 0,
@@ -552,6 +618,7 @@ def main() -> None:
     # 한글 비율 30% 미만이거나 120자 미만이면 스킵
     if kr_ratio < 0.30 or char_count < 120:
         _log(log_rec)
+        _clear_pending(session_id)
         sys.exit(0)
 
     # ── axis 1 ──────────────────────────────────────────────────────────────
@@ -609,6 +676,7 @@ def main() -> None:
     _log(log_rec)
 
     if not blocked:
+        _clear_pending(session_id)
         sys.exit(0)
 
     # reason 구성
@@ -620,7 +688,12 @@ def main() -> None:
     if a4_report_lines:
         reason_parts.append("참고:")
         reason_parts.extend(a4_report_lines)
-    _block("\n".join(reason_parts))
+    reason = "\n".join(reason_parts)
+
+    if mode == "block":
+        _block(reason)
+    else:
+        _write_pending(session_id, reason, char_count)
     sys.exit(0)
 
 
