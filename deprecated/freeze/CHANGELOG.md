@@ -1,5 +1,9 @@
 # CHANGELOG
 
+## deprecated — 2026-09-23
+
+은퇴. Claude Code가 한도 리셋 뒤 자동 재개를 기본으로 지원하게 되어 더는 쓰지 않는다. `deprecated/`로 옮기고 `SKILL.md`를 `SKILL.deprecated.md`로 바꿔 설치도 로드도 되지 않게 했다. 짝을 이루던 workflow-arm 훅도 같이 뺐다.
+
 ## 1.2.0 — 2026-08-31
 
 즉발 예약(`snap`), workflow-arm 훅의 규모 게이트, codex waker 를 들이고 맥에서 남아 있던 하드코딩을 걷었다.

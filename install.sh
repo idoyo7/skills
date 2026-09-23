@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # ~/.claude/skills/ 에 이 레포의 스킬들을 심링크로 걸고,
-# hooks/*/hook.conf 에 선언된 훅들(reply-check의 Stop 훅, workflow-arm의
-# PreToolUse 훅 등)을 ~/.claude/hooks/ 에 설치하며 ~/.claude/settings.json 에 등록한다.
+# hooks/*/hook.conf 에 선언된 훅들(reply-check의 Stop 훅 등)을 ~/.claude/hooks/ 에 설치하며 ~/.claude/settings.json 에 등록한다.
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -74,6 +73,48 @@ for agent_md in "$REPO_DIR"/*/agents/*.md; do
     ln -s "$agent_md" "$dest"
     echo "new:  $name → $agent_md"
   fi
+done
+
+# ── 1-c. deprecated 정리 ────────────────────────────────────────────────────
+# deprecated/ 로 옮긴 스킬·훅은 위아래 설치 루프가 더는 집지 않는다. 예전에
+# 설치해 둔 머신에 남은 심링크와 settings.json 등록은 여기서 걷는다. 심링크만
+# 지우고 실파일은 건드리지 않는다. --no-hooks 여도 돈다(제거만 하므로).
+for old in "$REPO_DIR"/deprecated/*/; do
+  name="$(basename "$old")"
+  [ "$name" = "hooks" ] && continue
+  if [ -L "$SKILLS_DIR/$name" ]; then
+    rm "$SKILLS_DIR/$name"
+    echo "del:  $name (deprecated 스킬 링크 제거)"
+  fi
+done
+for hook_conf in "$REPO_DIR"/deprecated/hooks/*/hook.conf; do
+  [ -f "$hook_conf" ] || continue
+  ENTRY=""
+  # shellcheck source=/dev/null
+  source "$hook_conf"
+  [ -n "$ENTRY" ] || continue
+  if [ -L "$HOME/.claude/hooks/$ENTRY" ]; then
+    rm "$HOME/.claude/hooks/$ENTRY"
+    echo "del:  $ENTRY (deprecated 훅 링크 제거)"
+  fi
+  [ -f "$HOME/.claude/settings.json" ] || continue
+  python3 - "$HOME/.claude/settings.json" "python3 \$HOME/.claude/hooks/$ENTRY" <<'PYEOF' || echo "skip: settings.json — $ENTRY 등록 해제 실패" >&2
+import json, pathlib, sys, time
+p = pathlib.Path(sys.argv[1]); cmd = sys.argv[2]
+raw = p.read_text(encoding="utf-8")
+data = json.loads(raw)
+changed = False
+for event, entries in data.get("hooks", {}).items():
+    kept = [e for e in entries if not any(h.get("command", "").strip() == cmd for h in e.get("hooks", []))]
+    if len(kept) != len(entries):
+        data["hooks"][event] = kept
+        changed = True
+if changed:
+    bak = f"{p}.bak.{time.strftime('%Y%m%dT%H%M%S')}"
+    pathlib.Path(bak).write_text(raw, encoding="utf-8")
+    p.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    print(f"del:  settings.json — {cmd} 등록 해제 (백업: {bak})")
+PYEOF
 done
 
 # ── 2. 훅 설치 ─────────────────────────────────────────────────────────────

@@ -18,7 +18,6 @@ git clone git@github.com:idoyo7/skills.git ~/src/skills
 | 디렉토리 | 호출 이름 | 설명 |
 |---|---|---|
 | `wwe/` | `/wwe` | 마크다운 윤문·구조 재작성·Astra high 최종 퇴고 handoff(v1.7). 한국어 명확성 지침을 모든 편집 경로에 공통 적용 |
-| `freeze/` | `/freeze` | 얼음! — 5시간 한도에 걸리면 handoff 를 남기고, 땡(리셋 시각)에 같은 세션을 헤드리스로 자동 재개하는 세션 예약 |
 | `jondae/` | `/jondae` | 어투를 존댓말로 맞추는 마무리 패스 (`안된다 → 안됩니다`). 종결어미만 바꾸고 구조·수치·코드는 바이트 보존, 검증은 스크립트가 강제 |
 
 ## 수록 훅
@@ -28,7 +27,6 @@ git clone git@github.com:idoyo7/skills.git ~/src/skills
 | 디렉터리 | 이벤트 | 설명 |
 |---|---|---|
 | `hooks/reply-check/` | Stop | 마지막 assistant 메시지의 한국어 산문을 세 축(무생물 주어·반복 구절·긴 문장)으로 검사, 기준 초과 시 재작성 요청 |
-| `hooks/workflow-arm/` | PreToolUse (`Workflow`) | 재개 예약 없이 큰 Workflow를 돌리려는 호출을 세션당 한 번 막고, freeze 예약 절차를 안내 |
 
 훅 설치만 건너뛰려면 `install.sh --no-hooks`로 실행한다.
 
@@ -37,6 +35,15 @@ git clone git@github.com:idoyo7/skills.git ~/src/skills
 | 디렉토리 | 설명 |
 |---|---|
 | [`warmup/`](warmup/) | Claude Code와 Codex의 5시간 사용 구간을 평일 고정 시각에 맞추는 macOS launchd / Ubuntu systemd 자동화와 설치 가이드 |
+
+## 은퇴한 스킬·훅
+
+[`deprecated/`](deprecated/)에 보관만 하고 설치하지 않는다. `install.sh`를 다시 돌리면 예전에 걸어둔 링크와 `settings.json` 등록을 걷어낸다.
+
+| 디렉토리 | 은퇴일 | 사유 |
+|---|---|---|
+| `deprecated/freeze/` | 2026-09-23 | Claude Code에 한도 리셋 후 자동 재개가 기본으로 들어와서 |
+| `deprecated/hooks/workflow-arm/` | 2026-09-23 | freeze 예약을 강제하던 훅이라 freeze와 함께 은퇴 |
 
 ## 스킬 추가하기
 
