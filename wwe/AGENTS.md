@@ -4,7 +4,7 @@
 
 ## 이 저장소가 무엇인가
 
-wwe는 실행 파일이 아니라 Claude Code가 읽는 스킬이다. v1.6은 보존 윤문·구조 편집과 선택 가능한 Astra 최종 퇴고 handoff를 제공한다. handoff에서는 Claude가 초안·검사 결과를 준비하고 Astra high가 최종 문체를 결정하며 Claude가 내용 보존을 검증한다. `SKILL.md`에 파이프라인 지시문이, `scripts/`에 그 지시문이 호출하는 결정적 스크립트(마스킹·복원·지문 채점·앵커 재계산·작성자 반복 구절 검출)가 들어 있다. 클론해서 올바른 경로에 두는 것만으로 스킬 설치가 끝나고, 별도 빌드나 실행 데몬은 없다.
+wwe는 실행 파일이 아니라 Claude Code가 읽는 스킬이다. v1.7.1은 보존 윤문·구조 편집과 선택 가능한 Astra 최종 퇴고 handoff를 제공하고, 세 경로에 한국어 명확성 지침을 공통으로 적용한다. handoff에서는 Claude가 초안·검사 결과를 준비하고 Astra high가 최종 문체를 결정하며 Claude가 내용 보존을 검증한다. `SKILL.md`에 파이프라인 지시문이, `scripts/`에 그 지시문이 호출하는 결정적 스크립트(마스킹·복원·지문 채점·앵커 재계산·작성자 반복 구절 검출)가 들어 있다. 클론해서 올바른 경로에 두는 것만으로 스킬 설치가 끝나고, 별도 빌드나 실행 데몬은 없다.
 
 주요 파일:
 
@@ -23,6 +23,8 @@ wwe는 실행 파일이 아니라 Claude Code가 읽는 스킬이다. v1.6은 �
 - `references/slop-lexicon.txt` — 초안 관문 결정적 층 사전(v1.4)
 - `references/slop-gate.md` — 초안 관문 LLM 층 지침(v1.4)
 - `agents/wwe-slop-judge.md` — 정밀 모드 전용 비저자 판정 에이전트(v1.4)
+- `references/korean-clarity.md` — 보존 윤문·구조 재작성·Astra 퇴고에 공통으로 적용하는 한국어 문장 지침(v1.7)
+- `references/editorial-guide.md` — 실제 재작성 사례·작성 지침·개정 제안을 담은 참고 자료. 실행 규칙은 아니다(v1.7.1)
 
 ## 설치 절차
 
