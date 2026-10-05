@@ -1,6 +1,6 @@
 ---
 name: wwe
-version: "1.7.0"
+version: "1.7.1"
 description: 마크다운 문서의 AI스러운 문장·표현·구성을 편집한다. 일반 윤문은 구조를 보존하고, 전면 재작성은 근거와 기술 내용을 보존하며 전개를 바꾼다. Claude에서 준비한 글을 Astra high에 최종 퇴고로 넘기는 handoff도 지원한다. 여러 게시글의 중복 전개와 도입·마무리를 함께 검토한다.
 ---
 
@@ -822,6 +822,7 @@ Phase 0의 재개 감지(중단된 실행을 이어가는 것)와는 다르다 �
 - `scripts/heading_anchor.py` — **헤딩 슬러그 재계산 + 같은 파일 내부 앵커 치환 + 게이트 D**. 헤딩 편집 옵션이 켜졌을 때만 쓰인다. `rewrite`(슬러그 재계산·앵커 치환)와 `gate`(무결성 판정 + 필요 시 헤딩 단위 롤백) 두 하위 명령
 - `scripts/scan_docs.py` — 문서 분류. 한글 비율·산문량·route_hint·에이전트 지시 파일 판정
 - `references/structure-editing.md` — 구조 재작성 요청의 전개·근거·보존·사이트 링크 검증 가이드. Phase 0보다 먼저 분기한다
+- `references/editorial-guide.md` — Claude 작성 지침을 준비하거나 WWE를 개정할 때 읽는 실제 재작성 사례·판단 기준·평가 예시. 현재 편집 경로와 게이트는 변경하지 않는다
 - `references/engine-swap-astra.md` — Claude 준비·Astra high 최종 퇴고·Claude 보존 검증의 handoff, 호출·실패·재개 계약과 비교 실험의 한계
 - `references/docs-profile.md` — 보존 모드에서만 quick-rules 위에 얹는 문서 전용 오버라이드. 구조 파괴 룰 무효화 + L 계열 제거 지시 + 지문 재생산 금지. `--diagnosis`로 monolith 입력 앞머리에 주입된다
 - `scripts/slop_scan.py` — **초안 관문(게이트 S) 스캐너**. `scan`(원본 채점)·`extract-llm`(monolith 편승 판정 추출)·`compare`(유래 판정·판정 병합) 세 하위 명령. S1~S3 는 게이트 S 판정에 쓰고, S4(명사형·연결어미 종결)는 게이트·보류·exit 어디에도 관여하지 않는 참고 지표다. report 전용이라 exit는 항상 0이다
