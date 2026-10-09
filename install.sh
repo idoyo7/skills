@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ~/.claude/skills/ 에 이 레포의 스킬들을 심링크로 걸고,
+# ~/.claude/skills/ 에 이 레포의 스킬들을 심링크로 걸고(.codex-skill 마커가 있는 스킬은 Codex 홈에도),
 # hooks/*/hook.conf 에 선언된 훅들(reply-check의 Stop 훅 등)을 ~/.claude/hooks/ 에 설치하며 ~/.claude/settings.json 에 등록한다.
 set -euo pipefail
 
@@ -47,6 +47,39 @@ for skill_md in "$REPO_DIR"/*/SKILL.md; do
     echo "new:  $name → $src"
   fi
 done
+
+# ── 1-a. Codex 스킬 심링크 ──────────────────────────────────────────────────
+# 스킬 디렉토리에 마커 파일 .codex-skill 이 있고 Codex 홈(${CODEX_HOME:-~/.codex})이
+# 이미 존재할 때만 <codex home>/skills/<이름> 에 건다. Codex 를 안 쓰는 머신에서
+# 디렉토리를 새로 만들지 않기 위해서다. 규칙은 위 스킬 링크와 같다 — 실디렉토리가
+# 있으면 건너뛰고 알린다. --no-hooks 와는 무관하게 항상 돈다.
+CODEX_HOME_DIR="${CODEX_HOME:-$HOME/.codex}"
+if [ -d "$CODEX_HOME_DIR" ]; then
+  CODEX_SKILLS_DIR="$CODEX_HOME_DIR/skills"
+  for marker in "$REPO_DIR"/*/.codex-skill; do
+    [ -f "$marker" ] || continue
+    src="$(dirname "$marker")"
+    [ -f "$src/SKILL.md" ] || continue
+    name="$(basename "$src")"
+    dest="$CODEX_SKILLS_DIR/$name"
+    mkdir -p "$CODEX_SKILLS_DIR"
+
+    if [ -L "$dest" ]; then
+      current="$(resolve_path "$dest")"
+      if [ "$current" = "$src" ]; then
+        echo "ok:   $name (Codex 이미 연결됨)"
+      else
+        ln -sfn "$src" "$dest"
+        echo "fix:  $name → $src (Codex, 다른 곳을 가리키던 링크 교체)"
+      fi
+    elif [ -e "$dest" ]; then
+      echo "skip: $name — $dest 가 실디렉토리/파일로 존재. 치운 뒤 다시 실행"
+    else
+      ln -s "$src" "$dest"
+      echo "new:  $name → $src (Codex)"
+    fi
+  done
+fi
 
 # ── 1-b. 에이전트 심링크 ────────────────────────────────────────────────────
 # 스킬이 Agent 도구로 부르는 서브에이전트 정의는 ~/.claude/agents/ 에 있어야
