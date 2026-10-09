@@ -11,6 +11,8 @@ git clone git@github.com:idoyo7/skills.git ~/src/skills
 
 `install.sh`는 `SKILL.md`를 가진 디렉토리마다 `~/.claude/skills/<이름>` 심링크를 걸어준다. 이미 같은 이름의 실디렉토리가 있으면 건너뛰고 알려주니, 수동으로 치운 뒤 다시 돌리면 된다.
 
+스킬 디렉토리에 `.codex-skill` 파일이 있으면 Codex에도 걸어준다. `${CODEX_HOME:-~/.codex}` 디렉토리가 이미 있을 때만 `skills/<이름>` 링크를 만들고, Codex를 쓰지 않는 머신에는 아무것도 만들지 않는다. 지금은 `memo/`만 해당한다.
+
 스킬 밑에 `agents/` 디렉토리가 있으면 그 안의 `*.md`도 `~/.claude/agents/`에 심링크한다. 스킬이 `Agent` 도구로 부르는 서브에이전트는 거기 있어야 인식되기 때문이다. 규칙은 스킬과 같다 — 같은 이름의 실파일이 있으면 건너뛰고 알린다.
 
 ## 수록 스킬
@@ -19,6 +21,7 @@ git clone git@github.com:idoyo7/skills.git ~/src/skills
 |---|---|---|
 | `wwe/` | `/wwe` | 마크다운 윤문·구조 재작성·Astra high 최종 퇴고 handoff(v1.7). 한국어 명확성 지침을 모든 편집 경로에 공통 적용 |
 | `jondae/` | `/jondae` | 어투를 존댓말로 맞추는 마무리 패스 (`안된다 → 안됩니다`). 종결어미만 바꾸고 구조·수치·코드는 바이트 보존, 검증은 스크립트가 강제 |
+| `memo/` | `/memo` | Memos(usememos) 메모 서비스 조회·검색·저장·수정·삭제. `scripts/memo.py` 하나가 REST API를 호출하고, 서비스 주소와 토큰은 사용자 홈의 `~/.config/memo.json`에만 둔다. Claude Code와 Codex 공용 |
 
 ## 수록 훅
 
