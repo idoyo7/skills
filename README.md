@@ -22,6 +22,7 @@ git clone git@github.com:idoyo7/skills.git ~/src/skills
 | `wwe/` | `/wwe` | 마크다운 윤문·구조 재작성·Astra high 최종 퇴고 handoff(v1.7). 한국어 명확성 지침을 모든 편집 경로에 공통 적용 |
 | `jondae/` | `/jondae` | 어투를 존댓말로 맞추는 마무리 패스 (`안된다 → 안됩니다`). 종결어미만 바꾸고 구조·수치·코드는 바이트 보존, 검증은 스크립트가 강제 |
 | `memo/` | `/memo` | Memos(usememos) 메모 서비스 조회·검색·저장·수정·삭제. `scripts/memo.py` 하나가 REST API를 호출하고, 서비스 주소와 토큰은 사용자 홈의 `~/.config/memo.json`에만 둔다. Claude Code와 Codex 공용 |
+| `clean_mac/` | `/clean_mac` | 맥 로컬 디스크 정리(v1.0). Go·pnpm·npm·pip·brew 캐시, 앱 캐시, `/private/tmp` 빌드 산출물, Docker 이미지·빌드 캐시를 dry-run 표로 보여주고 승인된 모듈만 지운다. 다른 Claude 세션 스크래치패드와 방치된 `node_modules` 는 모듈마다 따로 승인받는다. macOS 전용 |
 
 ## 수록 훅
 
