@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # clean_mac 스크립트 회귀 테스트. LLM·네트워크·실제 도구 호출 없음. bash 3.2 호환.
 #
-# 이 스크립트가 시험하는 대상은 rm -rfx 로 복구 불가능하게 지운다. 2026-09-29에
-# 가짜 트리로 시험하려던 real 실행이 실제 루트(/private/tmp/claude-<uid>)에서
-# 돌아 다른 세션의 스크래치패드를 지운 사고가 있었다. 그래서 real 모드는 아래가
+# 이 스크립트가 시험하는 대상은 rm -rfx 로 복구 불가능하게 지운다. 가짜 트리로
+# 시험하려던 real 실행도 루트 오버라이드가 없으면 실제
+# /private/tmp/claude-<uid>를 건드릴 수 있다. 그래서 real 모드는 아래가
 # 전부 성립할 때만 돈다 — 하나라도 어긋나면 아무것도 실행하지 않고 중단한다(99).
 #
 #   1) 모든 실행은 sbx() 를 거친다. sbx 는 env -i 로 환경을 비우고 HOME·TMPDIR·
@@ -130,9 +130,6 @@ guard_static() {
     if ! under_sb "$TMPB" || ! under_sb "$CT" || ! under_sb "$NM" || ! under_sb "$PJ"; then
         abort "스캔 루트가 샌드박스 밖"
     fi
-    case "$SCRIPTS" in
-        "$REAL_HOME/src") abort "원본 스크립트(~/src)는 시험 대상이 아님" ;;
-    esac
 }
 
 # sbx [VAR=값 ...] <명령...> — 비운 환경 + 샌드박스 값으로만 실행한다.
@@ -526,11 +523,14 @@ mk_home_fixture() {
         "$SBHOME/Library/pnpm/store" "$SBHOME/Library/Caches/pnpm" \
         "$SBHOME/.npm/_cacache" "$SBHOME/Library/Caches/pip" \
         "$SBHOME/Library/Caches/Homebrew" "$SBHOME/Library/Caches/Google/Chrome" \
-        "$SBHOME/.cache/opencode" "$SBHOME/Downloads"
+        "$SBHOME/.cache/opencode" "$SBHOME/Downloads" \
+        "$SBHOME/Library/Developer/Xcode/DerivedData" \
+        "$SBHOME/Library/Developer/CoreSimulator"
     local d
     for d in Library/Caches/go-build go/pkg/mod Library/pnpm/store Library/Caches/pnpm \
              .npm/_cacache Library/Caches/pip Library/Caches/Homebrew \
-             Library/Caches/Google/Chrome .cache/opencode Downloads; do
+             Library/Caches/Google/Chrome .cache/opencode Downloads \
+             Library/Developer/Xcode/DerivedData Library/Developer/CoreSimulator; do
         /usr/bin/perl -e 'print "x" x 65536' > "$SBHOME/$d/blob"
     done
 }
@@ -915,9 +915,9 @@ done
 if [ -z "$bad" ]; then ok "루트 오버라이드: 빈값·/·상대·'..'·\$HOME·\$HOME/src·/Users·짧은 경로 전부 거부"; else fail "루트 오버라이드가 받아들임:$bad"; fi
 # 같은 디렉터리를 다르게 적은 값. 글자 비교로는 전부 통과했다.
 /bin/ln -s "$SBHOME" "$SB/homelink"
-/bin/ln -s "$SBHOME/src" "$SB/evelink"
+/bin/ln -s "$SBHOME/src" "$SB/src-link"
 bad=""
-for v in "$SB//home" "$SB/homelink" "$SB/homelink/" "$SB/evelink"; do
+for v in "$SB//home" "$SB/homelink" "$SB/homelink/" "$SB/src-link"; do
     rro "$v"
     [ "$RC" = "1" ] || bad="$bad [$v]"
 done
@@ -944,10 +944,10 @@ t_rc "루트 오버라이드: 없는 경로는 통과(모듈이 '없음'으로 s
 rro "$SB//없는-루트"
 t_rc "루트 오버라이드: 연속 슬래시는 없는 경로여도 거부" 1
 t_has "루트 오버라이드: 연속 슬래시 메시지" "연속 슬래시(//)가 있어 거부"
-run TMP_BUILDS_ROOT="$SB/homelink" CLAUDE_TMP_ROOT="$SB/evelink" bash "$CLEAN" --dry-run --only tmp-builds,claude-tmp
+run TMP_BUILDS_ROOT="$SB/homelink" CLAUDE_TMP_ROOT="$SB/src-link" bash "$CLEAN" --dry-run --only tmp-builds,claude-tmp
 t_re "모듈: \$HOME 을 가리키는 심링크 루트는 FAIL" '^  40-tmp-builds +FAIL '
 t_re "모듈: \$HOME/src 를 가리키는 심링크 루트는 FAIL" '^  50-claude-tmp +FAIL '
-/bin/rm -f "$SB/homelink" "$SB/evelink" "$SB/tmplink"
+/bin/rm -f "$SB/homelink" "$SB/src-link" "$SB/tmplink"
 
 # age_value_ok (나이 임계값 env 검사)
 avo() {
@@ -1108,7 +1108,7 @@ clear_cfg; mk_claude_fixture
 run CLAUDE_CODE_SESSION_ID="$U_CUR" bash "$CLEAN" -y --only claude-tmp
 t_exists "lsof 가 실패하면 오래된 세션도 지우지 않는다" "$P/$U_OLD/scratchpad/f.txt"
 
-# 활동 중인 다른 세션. 2026-10-09 실제 dry-run 에서 당일 대화한 세션들이 후보로
+# 활동 중인 다른 세션. 과거 dry-run 에서 최근 대화한 세션들이 후보로
 # 나왔다 — 스크래치패드의 일반 파일 mtime 만 봤기 때문이다. 대화 기록
 # (<projects>/*/<uuid>.jsonl 과 <projects>/*/<uuid>/)과 디렉터리 변경도 본다.
 echo "== 50-claude-tmp: 대화 기록·디렉터리 변경으로 활동 중인 세션 보호 =="
@@ -1370,6 +1370,14 @@ run NODE_MODULES_ROOTS="$SBHOME" bash "$CLEAN" -y --only node-modules
 t_has "NODE_MODULES_ROOTS 가 \$HOME 이면 거부" "NODE_MODULES_ROOTS 값이 너무 넓어서 거부"
 t_re "너무 넓은 루트는 skip 으로 끝난다" '^  60-node-modules +skip$'
 
+# NODE_MODULES_ROOTS 를 지정하지 않은 공개 기본값도 샌드박스 HOME 아래에서 확인한다.
+NM_SAVED="$NM"
+NM="$SBHOME/src"
+clear_cfg; mk_nm_fixture
+run /usr/bin/env -u NODE_MODULES_ROOTS bash "$CLEAN" --dry-run --only node-modules
+t_has "기본 루트는 \$HOME/src" "[dry-run] rm -rfx $SBHOME/src/stale/node_modules"
+NM="$NM_SAVED"
+
 # ---- 외부 도구 모듈 ----------------------------------------------------------------
 echo "== 외부 도구 모듈 =="
 clear_cfg; mk_home_fixture; mk_tmp_fixture; mk_claude_fixture; mk_nm_fixture; clear_cfg
@@ -1453,6 +1461,8 @@ clear_cfg; mk_home_fixture; mk_claude_fixture; clear_cfg
 SNAP="$(snapshot)"
 run bash "$CLEAN" -y --only report
 t_has "report 는 Downloads 크기를 보고한다" "90-report: $SBHOME/Downloads — "
+t_has "report 는 Xcode DerivedData 크기를 보고한다" "90-report: $SBHOME/Library/Developer/Xcode/DerivedData — "
+t_has "report 는 CoreSimulator 크기를 보고한다" "90-report: $SBHOME/Library/Developer/CoreSimulator — "
 t_has "report 는 CLAUDE_TMP_ROOT 크기를 보고한다" "90-report: $CT — "
 t_eq "report 는 real 모드에서도 아무것도 지우지 않는다" "$(snapshot)" "$SNAP"
 

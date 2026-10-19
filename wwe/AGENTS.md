@@ -24,7 +24,7 @@ wwe는 실행 파일이 아니라 Claude Code가 읽는 스킬이다. v1.7.1은 
 - `references/slop-gate.md` — 초안 관문 LLM 층 지침(v1.4)
 - `agents/wwe-slop-judge.md` — 정밀 모드 전용 비저자 판정 에이전트(v1.4)
 - `references/korean-clarity.md` — 보존 윤문·구조 재작성·Astra 퇴고에 공통으로 적용하는 한국어 문장 지침(v1.7)
-- `references/editorial-guide.md` — 실제 재작성 사례·작성 지침·개정 제안을 담은 참고 자료. 실행 규칙은 아니다(v1.7.1)
+- `references/editorial-guide.md` — 설명용 편집 예시·작성 지침·개정 제안을 담은 참고 자료. 실행 규칙은 아니다(v1.7.1)
 
 ## 설치 절차
 

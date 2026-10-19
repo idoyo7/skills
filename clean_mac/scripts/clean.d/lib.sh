@@ -196,11 +196,9 @@ with_timeout() {
 # 경고를 내고 1을 반환한다(호출부는 RESULT 없이 exit 1 — clean.sh 표에
 # FAIL로 찍힌다).
 #
-# 40-tmp-builds / 50-claude-tmp 의 루트는 원래 하드코딩이었다. 그래서
-# 2026-09-29에 가짜 트리로 시험하려던 실행이 실제 루트
-# (/private/tmp/claude-<uid>)에서 real 모드로 돌아 다른 세션의
-# 스크래치패드를 지운 사고가 있었다 — env로 루트를 바꿀 수 있어야 가짜
-# 트리 시험이 실제 경로를 건드리지 않는다.
+# 40-tmp-builds / 50-claude-tmp 의 루트가 하드코딩돼 있으면 가짜 트리로
+# 시험하려던 실행도 실제 루트(/private/tmp/claude-<uid>)를 건드릴 수 있다.
+# env로 루트를 바꿀 수 있어야 회귀 시험이 실제 경로를 건드리지 않는다.
 #
 # 이 값은 그대로 safe_rm의 허용 접두가 되므로, 오버라이드가 삭제 범위를
 # 넓히는 구멍이 되지 않게 safe_rm이 "대상"에 적용하는 위험 경로 목록과
@@ -209,8 +207,9 @@ with_timeout() {
 #
 # 위험 경로는 글자뿐 아니라 "같은 디렉터리인가"(장치번호:inode)로도 본다.
 # 글자 비교만 하던 때는 $HOME을 다르게 적은 값이 그대로 통과했다 —
-# /Users//sample, /users/sample(대소문자 무시 볼륨), /System/Volumes/Data/Users/sample
-# (firmlink), $HOME을 가리키는 심볼릭 링크가 전부 $HOME과 같은 inode인데
+# /Users//sample, /users/sample(대소문자 무시 볼륨),
+# /System/Volumes/Data/Users/sample(firmlink), $HOME을 가리키는 심볼릭 링크가
+# 전부 $HOME과 같은 inode인데
 # 루트로 받아들여졌고, safe_rm의 허용 접두 검사도 글자 비교라 두 겹이 같이
 # 뚫렸다(재현됨). 연속 슬래시는 따로 거부한다 — 없는 경로라 inode를 못
 # 구할 때도 표기가 하나로 정해지게.

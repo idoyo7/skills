@@ -1,7 +1,7 @@
 ---
 name: clean_mac
 version: "1.0.0"
-description: "맥 로컬 디스크를 정리해 여유공간을 확보한다. Go·pnpm·npm·pip·Homebrew 캐시, 앱 캐시(Google·opencode), /private/tmp 의 오래된 빌드 산출물, Docker 이미지·빌드 캐시를 지우고, 승인받으면 다른 Claude 세션의 스크래치패드와 방치된 프로젝트의 node_modules 까지 지운다. 호출하면 미리보기에서 멈추지 않고 실제 정리까지 한다 — dry-run 표를 보여주고 범위를 한 번 물은 뒤 승인된 모듈만 실행한다. 삭제는 rm -rfx 라 되돌릴 수 없어서, 과거 사고(2026-09-29 테스트 중 다른 세션 스크래치패드 삭제)를 근거로 모듈을 기본 세트와 개별 확인 세트로 나눴다. 트리거 — \"디스크 정리\", \"용량 확보\", \"로컬 스토리지 정리\", \"local storage 정리\", \"디스크 비워줘\", \"저장공간 부족\", \"맥 정리\", \"캐시 정리\", \"npm 캐시\", \"docker 정리\", \"clean_mac\". 앱 삭제, 사진·다운로드 같은 사용자 파일 정리, 원격 서버·쿠버네티스 노드의 디스크, Linux 는 이 스킬이 아니다."
+description: "맥 로컬 디스크를 정리해 여유공간을 확보한다. Go·pnpm·npm·pip·Homebrew 캐시, 앱 캐시(Google·opencode), /private/tmp 의 오래된 빌드 산출물, Docker 이미지·빌드 캐시를 지우고, 승인받으면 다른 Claude 세션의 스크래치패드와 방치된 프로젝트의 node_modules 까지 지운다. 호출하면 미리보기에서 멈추지 않고 실제 정리까지 한다 — dry-run 표를 보여주고 범위를 한 번 물은 뒤 승인된 모듈만 실행한다. 삭제는 rm -rfx 라 되돌릴 수 없어서, 회귀 시험에서 확인된 위험을 근거로 모듈을 기본 세트와 개별 확인 세트로 나눴다. 트리거 — \"디스크 정리\", \"용량 확보\", \"로컬 스토리지 정리\", \"local storage 정리\", \"디스크 비워줘\", \"저장공간 부족\", \"맥 정리\", \"캐시 정리\", \"npm 캐시\", \"docker 정리\", \"clean_mac\". 앱 삭제, 사진·다운로드 같은 사용자 파일 정리, 원격 서버·쿠버네티스 노드의 디스크, Linux 는 이 스킬이 아니다."
 argument-hint: "[바로 | 미리보기 | 모듈 이름들(예: docker,npm)]"
 ---
 
@@ -50,7 +50,7 @@ bash ~/.claude/skills/clean_mac/scripts/clean.sh -y --only go,pnpm,npm,pip,brew,
 후보 줄에는 대화 기록의 마지막 수정 시각이 같이 찍힌다.
 
 ```
-50-claude-tmp: [dry-run] rm -rfx <경로> (<크기>, 대화 기록 마지막 수정 2026-10-05 20:42)
+50-claude-tmp: [dry-run] rm -rfx <경로> (<크기>, 대화 기록 마지막 수정 YYYY-MM-DD HH:MM)
 50-claude-tmp: [dry-run] rm -rfx <경로> (<크기>, 대화 기록 없음)
 ```
 
@@ -66,7 +66,7 @@ bash ~/.claude/skills/clean_mac/scripts/clean.sh -y --only go,pnpm,npm,pip,brew,
 ### 인자 없음 — `/clean_mac`
 
 0. 현재 여유공간을 본다. `df -h /System/Volumes/Data`
-1. 전체 미리보기. 실측 1분 40초(2026-10-09)였고 lsof·du 가 느리면 더 걸린다. Bash timeout 을 300000 으로 준다.
+1. 전체 미리보기. `lsof`·`du`가 느리면 몇 분 걸릴 수 있으므로 Bash timeout 을 300000 으로 준다.
    ```bash
    bash ~/.claude/skills/clean_mac/scripts/clean.sh --dry-run
    ```
@@ -176,7 +176,6 @@ docker 데몬이 응답하지 않으면(Docker Desktop 이 꺼져 있을 때도 
   ```bash
   bash ~/.claude/skills/clean_mac/tests/test_clean_mac.sh
   ```
-- 원본 `~/src/clean.sh`·`~/src/clean.d/` 는 이관 전 사본이다. 이 스킬의 스크립트가 아니니 부르지 않는다.
 
 ## 8. 조정값
 
@@ -209,10 +208,10 @@ docker 데몬이 응답하지 않으면(Docker Desktop 이 꺼져 있을 때도 
 
 ## 왜 이렇게 나눴나
 
-삭제가 `rm -rfx` 라 휴지통이 없다. 그리고 실제로 사고가 났다. 2026-09-29에 스크립트를 쓰던 에이전트가 "실제 삭제 금지" 지시를 받고도 `50-claude-tmp` 를 실제 루트에서 real 모드로 돌려 다른 세션의 스크래치패드를 지웠다. 루트가 하드코딩이라 가짜 트리로 시험할 방법이 없었던 탓이다. 그래서 이관하면서 세 가지를 넣었다.
+삭제가 `rm -rfx` 라 휴지통이 없다. 회귀 시험에서 루트가 하드코딩돼 있으면 가짜 트리 대신 실제 루트를 건드릴 수 있음을 확인했다. 그래서 세 가지 안전장치를 넣었다.
 
 - 루트를 env 로 덮어쓸 수 있게 하고(`TMP_BUILDS_ROOT`, `CLAUDE_TMP_ROOT`), `safe_rm` 에 샌드박스 가드(`CLEAN_SANDBOX_ROOT`)를 뒀다. 테스트 하네스는 조건이 하나라도 어긋나면 아무것도 실행하지 않고 멈춘다.
-- 사람의 작업물에 가까운 두 모듈(`claude-tmp`, `node-modules`)을 기본 세트에서 뺐다. mtime 은 "방치됐다"의 대용일 뿐이다. `claude-tmp` 는 당일 대화한 세션이 후보로 뽑히는 것이 실제 dry-run 에서 확인돼(2026-10-09) 스크립트가 대화 기록과 디렉터리 변경까지 보게 고쳤다. 그래도 추정인 것은 같아서 개별 확인 세트에 그대로 둔다.
+- 사람의 작업물에 가까운 두 모듈(`claude-tmp`, `node-modules`)을 기본 세트에서 뺐다. mtime 은 "방치됐다"의 대용일 뿐이다. `claude-tmp` 는 최근 대화한 세션도 후보가 될 수 있어 대화 기록과 디렉터리 변경까지 보게 했다. 그래도 추정인 것은 같아서 개별 확인 세트에 그대로 둔다.
 - 승인 없이는 `-y` 를 붙이지 않는다는 규칙을 문서에 못 박았다.
 
 `safe_rm` 의 나머지 검사(절대경로, `.`/`..` 거부, 위험 경로 목록, 허용 접두, 심링크는 링크만, 마운트 포인트 거부)와 `--only` 의 엄격한 매칭도 같은 식으로 생겼다. 재현된 사고(마운트 포인트를 시작점으로 한 삭제, 너무 넓은 허용 접두, 모호한 `--only` 토큰이 전체 선택으로 바뀐 것, cwd 파일명이 끼어든 글롭)는 `lib.sh`·`clean.sh` 주석에 적혀 있다.
@@ -229,5 +228,4 @@ docker 데몬이 응답하지 않으면(Docker Desktop 이 꺼져 있을 때도 
 
 - `install.sh` 로 `~/.claude/skills/clean_mac` 심링크를 건 뒤에 쓴다. 이 문서의 경로는 전부 그 심링크를 거친다. 심링크가 없으면 명령이 `No such file` 로 끝난다.
 - macOS 전용이다. `df /System/Volumes/Data`, `stat -f`, `rm -x`, `du -skx` 에 기대고, 타임아웃은 `perl` 로 구현했다. bash 3.2 에서 돈다.
-- 개인 환경에 맞춘 값이 그대로 있다 — `node-modules` 기본 루트와 `safe_rm` 거부 목록의 `~/src`, `report` 의 경로 목록.
 - 나이 임계값(3일·24시간·30일)과 docker 정책은 스크립트를 처음 쓸 때 정한 기본값이다. 바꿀 때는 사용자에게 확인한다.

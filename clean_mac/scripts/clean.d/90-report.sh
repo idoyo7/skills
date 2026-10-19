@@ -27,11 +27,9 @@ report_one() {
 }
 
 report_one "$HOME/Pictures/Photos Library.photoslibrary" "iCloud 사진 원본을 클라우드로 최적화하면 로컬 용량을 줄일 수 있음, 삭제 대상 아님"
-report_one "$HOME/src/istio-io/archive" "git으로 추적 중인 디렉터리, 필요 없으면 sparse-checkout으로 체크아웃만 제외 고려"
-report_one "$HOME/k8s-backup" ""
 report_one "$HOME/Downloads" ""
-report_one "$HOME/Library/Containers/com.kakao.KakaoTalkMac" ""
-report_one "$HOME/Library/Containers/com.tinyspeck.slackmacgap" ""
+report_one "$HOME/Library/Developer/Xcode/DerivedData" "Xcode 빌드 산출물, 이 모듈은 보고만 함"
+report_one "$HOME/Library/Developer/CoreSimulator" "시뮬레이터 데이터, 이 모듈은 보고만 함"
 
 if [ -d "$HOME/.venvs" ]; then
     for venv in "$HOME"/.venvs/*; do

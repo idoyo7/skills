@@ -25,9 +25,8 @@
 #      -skx(마운트 안 넘음)로만 부른다 — NFS가 응답 없을 때 크기 재려다
 #      멈추는 사고를 막기 위함.
 #   6) 그 세션의 대화 기록이 최근 N시간 내 수정됐으면 skip 한다. 스크래치
-#      패드는 조용한데 대화는 이어지고 있는 세션이 있다 — 2026-10-09 실제
-#      dry-run에서 당일 12:35·13:14에 대화한 세션들이 후보(합계 4.30GB)에
-#      들어 있었다. 2)의 lsof는 스크래치패드를 cwd로 쓰거나 그 안의 파일을
+#      패드는 조용한데 대화는 이어지고 있는 세션도 있다. 2)의 lsof는
+#      스크래치패드를 cwd로 쓰거나 그 안의 파일을
 #      열어 둔 프로세스만 잡으므로 "실행 중인 세션"을 알아보지 못한다.
 #      대화 기록을 조회하지 못하면 "기록 없음"이 아니라 판정 불가로 보고
 #      skip 한다(아래 transcript_activity). 프로젝트 디렉터리 하나를 볼 수
@@ -67,9 +66,9 @@ fi
 CLAUDE_UID="$(id -u)"
 # 스캔/삭제 루트. 기본값은 /private/tmp/claude-<uid> 그대로다.
 # CLAUDE_TMP_ROOT로 덮어쓸 수 있는데, 평소에 쓰라는 값이 아니라 테스트
-# 하네스가 가짜 트리를 가리키게 하려는 것이다. 이 루트가 하드코딩이라
-# 2026-09-29에 가짜 트리 시험이 실제 루트에서 real 모드로 돌아 다른 세션의
-# 스크래치패드를 지웠다(lib.sh resolve_root_override 주석 참고). 검사를 못
+# 하네스가 가짜 트리를 가리키게 하려는 것이다. 이 루트가 하드코딩이면
+# 가짜 트리 시험도 실제 루트에서 돌 수 있다(lib.sh resolve_root_override
+# 주석 참고). 검사를 못
 # 넘으면 RESULT 없이 끝낸다.
 CLAUDE_TMP_ROOT=$(resolve_root_override CLAUDE_TMP_ROOT "${CLAUDE_TMP_ROOT:-/private/tmp/claude-${CLAUDE_UID}}") || exit 1
 CURRENT_SESSION_ID="${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}"

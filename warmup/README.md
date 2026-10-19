@@ -136,11 +136,11 @@ Codex 호출은 OpenAI 공식 문서의 비대화형 `codex exec` 인터페이�
 
 ## 기존 Claude 전용 설정에서 옮기기
 
-예전 `com.example.claude-session-warmup` LaunchAgent가 남아 있으면 새 Claude 작업과 중복 호출된다. 새 설치를 검증한 뒤 기존 작업을 내린다.
+이전에 직접 등록한 Claude 전용 LaunchAgent가 남아 있으면 새 Claude 작업과 중복 호출된다. 새 설치를 검증한 뒤 기존 작업을 내린다.
 
 ```bash
-launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.example.claude-session-warmup.plist
-launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.example.claude-session-warmup-keepawake.plist
+# 이전에 등록한 plist의 실제 경로로 바꿔 실행한다.
+launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/<기존 작업 이름>.plist"
 ```
 
 기존 plist와 `~/.local/bin/claude-session-warmup.sh`는 새 설치가 정상임을 확인한 뒤 직접 보관하거나 삭제한다.
