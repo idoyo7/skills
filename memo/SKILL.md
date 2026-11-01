@@ -8,7 +8,7 @@ description: "사용자의 Memos(usememos) 메모 서비스에서 메모를 저�
 사용자가 운영하는 Memos 서버의 메모를 읽고 쓴다.
 
 ```
-스킬 지침 → scripts/memo.py 실행 → Memos REST API 호출 → 결과 재조회
+스킬 지침 → scripts/memo.py 실행 → Memos REST API(`/api/...`, Memos 26.10 이상) 호출 → 결과 재조회
 ```
 
 MCP 서버도 상주 프로세스도 없다. Python 3.9 이상과 표준 라이브러리만 쓴다.

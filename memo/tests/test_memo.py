@@ -42,12 +42,12 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get("Authorization") != "Bearer " + TOKEN:
             return self.reply(401, {"message": "secret-body " + TOKEN})
         if st.mode == "redirect":
-            return self.reply(302, headers={"Location": "/api/v1/memos/landed"})
+            return self.reply(302, headers={"Location": "/api/memos/landed"})
         if st.mode == "fail500":
             return self.reply(500, {"message": "boom " + TOKEN})
-        if path == "/api/v1/auth/me":
+        if path == "/api/auth/me":
             return self.reply(404) if st.mode == "no_me" else self.reply(200, {"user": {"name": "users/1"}})
-        if path == "/api/v1/memos" and self.command == "GET":
+        if path == "/api/memos" and self.command == "GET":
             params = dict(p.split("=", 1) for p in query.split("&") if p)
             size = int(params.get("pageSize", 20))
             start = int(params.get("pageToken") or 0)
@@ -55,13 +55,13 @@ class Handler(BaseHTTPRequestHandler):
             chunk = items[start:start + size]
             nxt = str(start + size) if start + size < len(items) else ""
             return self.reply(200, {"memos": chunk, "nextPageToken": nxt})
-        if path == "/api/v1/memos" and self.command == "POST":
+        if path == "/api/memos" and self.command == "POST":
             st.seq += 1
             name = "memos/m%d" % st.seq
             st.memos[name] = {"name": name, "content": body["content"], "visibility": body.get("visibility", "PRIVATE")}
             return self.reply(200, st.memos[name])
-        if path.startswith("/api/v1/memos/"):
-            name = path[len("/api/v1/"):]
+        if path.startswith("/api/memos/"):
+            name = path[len("/api/"):]
             if name not in st.memos:
                 return self.reply(404, {"message": "nope"})
             if self.command == "GET":
@@ -222,14 +222,14 @@ class MemoTest(unittest.TestCase):
         self.assertEqual(len(r2["memos"]), 1)
         self.assertEqual(r2["next_page_token"], "")
 
-    def test_doctor_and_fallback(self):
+    def test_doctor_auth_me_missing(self):
         r = self.run_memo("doctor")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(json.loads(r.stdout)["auth_endpoint"], "GET /auth/me")
         self.st.mode = "no_me"
         r = self.run_memo("doctor")
-        self.assertEqual(r.returncode, 1)  # 가짜 서버엔 폴백 경로가 없다
-        self.assertIn("엔드포인트", r.stderr)
+        self.assertEqual(r.returncode, 1)  # 폴백 없이 /auth/me 404 를 그대로 보고한다
+        self.assertIn("/auth/me", r.stderr)
 
     def test_config_missing(self):
         r = self.run_memo("list", cfg=os.path.join(self.tmp.name, "absent.json"))
