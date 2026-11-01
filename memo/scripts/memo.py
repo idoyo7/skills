@@ -12,7 +12,7 @@ import urllib.parse
 import urllib.request
 
 DEFAULT_CONFIG = "~/.config/memo.json"
-API = "/api/v1"
+API = "/api"  # Memos 26.10+ (옛 /api/v1 은 410)
 VISIBILITIES = ("PRIVATE", "PROTECTED", "PUBLIC")
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
@@ -149,6 +149,8 @@ class Client:
             return "403: 이 토큰에 해당 작업 권한이 없다."
         if code == 404:
             return ("404: 대상 리소스가 없거나 API 경로가 다르다 (%s %s). 토큰 문제로 단정하지 않는다." % (method, path))
+        if code == 410:
+            return "410: 이 API 경로는 제거됐다. 서버 버전에 맞는 스킬로 갱신한다 (%s %s)." % (method, path)
         if 300 <= code < 400:
             return "%d: 리다이렉트는 따라가지 않는다. base_url 을 확인한다." % code
         return "%d: 서버가 %s %s 를 처리하지 못했다. 자동 재시도하지 않는다." % (code, method, path)
@@ -181,22 +183,9 @@ def read_content(path):
 
 
 def cmd_doctor(c, a):
-    auth = None
-    tried = []
-    for method, path in (("GET", "/auth/me"), ("POST", "/auth/status"), ("GET", "/auth/sessions/current")):
-        try:
-            c.request(method, path, body={} if method == "POST" else None)
-            auth = "%s %s" % (method, path)
-            break
-        except MemoError as e:
-            tried.append("%s %s -> %s" % (method, path, str(e)[:3]))
-            # 401/403 은 경로 차이가 아니므로 폴백하지 않는다
-            if str(e)[:3] in ("401", "403"):
-                raise
-    if auth is None:
-        raise MemoError("인증 확인 엔드포인트를 찾지 못했다: " + "; ".join(tried))
+    c.request("GET", "/auth/me")
     res = c.request("GET", "/memos", {"pageSize": 1})
-    return {"ok": True, "authenticated": True, "auth_endpoint": auth,
+    return {"ok": True, "authenticated": True, "auth_endpoint": "GET /auth/me",
             "memos_readable": isinstance(res.get("memos", []), list),
             "write_checked": False}
 
