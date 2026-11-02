@@ -43,6 +43,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(401, {"message": "secret-body " + TOKEN})
         if st.mode == "redirect":
             return self.reply(302, headers={"Location": "/api/memos/landed"})
+        if st.mode == "quota" and self.command == "POST":
+            return self.reply(429, {"message": "QUOTA_EXCEEDED " + TOKEN})
         if st.mode == "fail500":
             return self.reply(500, {"message": "boom " + TOKEN})
         if path == "/api/auth/me":
@@ -188,6 +190,15 @@ class MemoTest(unittest.TestCase):
         r = self.run_memo("get", "memos/none")
         self.assertIn("404", r.stderr)
         self.assertIn("단정하지 않는다", r.stderr)
+
+    def test_quota_exceeded(self):
+        self.st.mode = "quota"
+        r = self.run_memo("create", "--file", self.tmpfile("hello"))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("429", r.stderr)
+        self.assertIn("사용량 한도", r.stderr)
+        self.assertNotIn(TOKEN, r.stdout + r.stderr)
+        self.assertEqual(len([q for q in self.st.requests if q[0] == "POST"]), 1)
 
     def test_redirect_blocked(self):
         self.st.mode = "redirect"

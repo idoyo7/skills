@@ -12,7 +12,7 @@ import urllib.parse
 import urllib.request
 
 DEFAULT_CONFIG = "~/.config/memo.json"
-API = "/api"  # Memos 26.10+ (옛 /api/v1 은 410)
+API = "/api"  # Memos 26.10+ (v1 버전 표시 제거. 옛 /api/v1 은 26.10 에서 410, 다음 릴리스부터 404)
 VISIBILITIES = ("PRIVATE", "PROTECTED", "PUBLIC")
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
@@ -144,11 +144,15 @@ class Client:
     @staticmethod
     def http_message(method, path, code):
         if code == 401:
-            return "401: 인증이 거부됐거나 토큰이 만료됐다. 토큰을 확인한다."
+            return ("401: 인증이 거부됐거나 토큰이 만료됐다. Memos 26.10 부터는 비밀번호를 바꾸거나 "
+                    "업그레이드하기 전에 발급한 토큰도 무효이니 새 토큰을 발급한다.")
         if code == 403:
             return "403: 이 토큰에 해당 작업 권한이 없다."
         if code == 404:
-            return ("404: 대상 리소스가 없거나 API 경로가 다르다 (%s %s). 토큰 문제로 단정하지 않는다." % (method, path))
+            return ("404: 대상 리소스가 없거나 API 경로가 다르다 (%s %s). 이 스킬은 Memos 26.10 이상의 /api 경로를 쓴다. 토큰 문제로 단정하지 않는다." % (method, path))
+        if code == 429:
+            return ("429: 사용량 한도(USAGE_LIMITS)를 넘었거나 요청이 몰렸다 (%s %s). "
+                    "자동 재시도하지 않는다. 한도는 관리자에게 확인한다." % (method, path))
         if code == 410:
             return "410: 이 API 경로는 제거됐다. 서버 버전에 맞는 스킬로 갱신한다 (%s %s)." % (method, path)
         if 300 <= code < 400:
