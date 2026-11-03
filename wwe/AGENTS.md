@@ -4,7 +4,7 @@
 
 ## 이 저장소가 무엇인가
 
-wwe는 실행 파일이 아니라 Claude Code가 읽는 스킬이다. v1.7.1은 보존 윤문·구조 편집과 선택 가능한 Astra 최종 퇴고 handoff를 제공하고, 세 경로에 한국어 명확성 지침을 공통으로 적용한다. handoff에서는 Claude가 초안·검사 결과를 준비하고 Astra high가 최종 문체를 결정하며 Claude가 내용 보존을 검증한다. `SKILL.md`에 파이프라인 지시문이, `scripts/`에 그 지시문이 호출하는 결정적 스크립트(마스킹·복원·지문 채점·앵커 재계산·작성자 반복 구절 검출)가 들어 있다. 클론해서 올바른 경로에 두는 것만으로 스킬 설치가 끝나고, 별도 빌드나 실행 데몬은 없다.
+wwe는 실행 파일이 아니라 Claude Code가 읽는 스킬이다. v1.8.0은 보존 윤문·구조 편집과 선택 가능한 Astra 전면 재개편 handoff를 제공하고, 세 경로에 한국어 명확성 지침을 공통으로 적용한다. handoff에서는 Claude가 초안·검사 결과를 준비하고 Astra xhigh가 단어·문장·글 구조·전체 흐름을 전면 재개편하며 Claude가 내용 보존을 검증한다. `SKILL.md`에 파이프라인 지시문이, `scripts/`에 그 지시문이 호출하는 결정적 스크립트(마스킹·복원·지문 채점·앵커 재계산·작성자 반복 구절 검출)가 들어 있다. 클론해서 올바른 경로에 두는 것만으로 스킬 설치가 끝나고, 별도 빌드나 실행 데몬은 없다.
 
 주요 파일:
 
@@ -15,7 +15,7 @@ wwe는 실행 파일이 아니라 Claude Code가 읽는 스킬이다. v1.7.1은 
 - `scripts/author_repeat.py` — 작성자 반복 구절 검출·gen-block 생성(v1.3)
 - `references/docs-profile.md` — 보존 모드 전용 윤문 오버라이드
 - `references/structure-editing.md` — 구조 재작성·내용 보존·사이트 링크 검증 가이드(v1.5)
-- `references/engine-swap-astra.md` — Astra high handoff의 준비·호출·검증·재개 가이드(v1.6)
+- `references/engine-swap-astra.md` — Astra xhigh handoff의 준비·호출·검증·재개 가이드(v1.6)
 - `references/author-tics.txt` — 장르별 반복 구절 시드 목록(v1.3)
 - `references/author-repeat-stop.txt` — 검출 시 걸러낼 불용어 목록(v1.3)
 - `tests/test_author_repeat.py` — 작성자 반복 구절 테스트 하네스(v1.3)
